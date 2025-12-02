@@ -57,6 +57,10 @@ let showSkeleton = true;
 
 let lastPts = null;  // for velocity
 let lastTime = 0;
+let frameCounter = 0; // for updating background every other frame
+let fps = 0;
+let fpsUpdateTime = 0;
+let fpsFrameCount = 0;
 
 function preload() {
   // Pose model (BlazePose recommended)
@@ -88,9 +92,18 @@ function keyPressed() {
 
 function draw() {
   background(0);
+  frameCounter++;
+
+  // --- FPS calculation ---
+  fpsFrameCount++;
+  const now = millis();
+  if (now - fpsUpdateTime >= 500) { // Update FPS every 500ms
+    fps = (fpsFrameCount / ((now - fpsUpdateTime) / 1000)).toFixed(1);
+    fpsFrameCount = 0;
+    fpsUpdateTime = now;
+  }
 
   // --- dt-aware body speed ---
-  const now   = millis();
   const dtSec = max(0.001, (now - lastTime) / 1000.0);
   lastTime    = now;
 
@@ -125,15 +138,18 @@ function draw() {
   const briTarget = lerp(BRI_MIN,   BRI_MAX,   tColor);
 
   // --- time-constant smoothing (fast return when idle) ---
-  const tauHue = isIdle ? IDLE_TAU_SEC : ACTIVE_TAU_SEC;
-  const tauSB  = SATBRI_TAU_SEC;
+  // Only update background colors every other frame for smoothness
+  if (frameCounter % 2 === 0) {
+    const tauHue = isIdle ? IDLE_TAU_SEC : ACTIVE_TAU_SEC;
+    const tauSB  = SATBRI_TAU_SEC;
 
-  const aHue = 1.0 - Math.exp(-dtSec / max(1e-3, tauHue));
-  const aSB  = 1.0 - Math.exp(-dtSec / max(1e-3, tauSB));
+    const aHue = 1.0 - Math.exp(-dtSec / max(1e-3, tauHue));
+    const aSB  = 1.0 - Math.exp(-dtSec / max(1e-3, tauSB));
 
-  hueNow = lerpHue(hueNow, hueTarget, aHue);
-  satNow = lerp(satNow,   satTarget, aSB);
-  briNow = lerp(briNow,   briTarget, aSB);
+    hueNow = lerpHue(hueNow, hueTarget, aHue);
+    satNow = lerp(satNow,   satTarget, aSB);
+    briNow = lerp(briNow,   briTarget, aSB);
+  }
 
   // --- background gradient (bright & fast-reacting) ---
   noStroke();
@@ -155,13 +171,15 @@ function draw() {
 
   // --- HUD ---
   if (showDebug) {
+    noStroke();
     fill(0, 0, 0, 65);
-    rect(10, 10, 520, 90, 8);
+    rect(10, 10, 520, 105, 8);
     fill(0, 0, 100);
     textSize(12);
-    text(`speed raw:${spdRaw.toFixed(3)}  lp:${spdLP2.toFixed(3)}  t:${tLinear.toFixed(2)}`, 20, 30);
-    text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 46);
-    text(`[D] HUD  [S] skeleton  gain:${SPEED_GAIN} (x2 local)  deadzone:${MOTION_DEADZONE}`, 20, 62);
+    text(`FPS: ${fps}`, 20, 30);
+    text(`speed raw:${spdRaw.toFixed(3)}  lp:${spdLP2.toFixed(3)}  t:${tLinear.toFixed(2)}`, 20, 46);
+    text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
+    text(`[D] HUD  [S] skeleton  gain:${SPEED_GAIN} (x2 local)  deadzone:${MOTION_DEADZONE}`, 20, 78);
   }
 }
 
