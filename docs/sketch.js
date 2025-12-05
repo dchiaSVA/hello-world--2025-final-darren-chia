@@ -57,14 +57,21 @@ let showSkeleton = true;
 
 let lastPts = null;  // for velocity
 let lastTime = 0;
-let frameCounter = 0; // for updating background every other frame
+let frameCounter = 0;
 let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
 // SES smoothing for skeleton
-const SES_ALPHA = 0.65; // smoothing factor (higher = less smoothing, more responsive)
+const SES_ALPHA = 0.55; // smoothing factor (higher = less smoothing, more responsive)
 let smoothedKeypoints = null;
+
+// Segmentation mask smoothing
+const MASK_SMOOTH_ALPHA = 0.7; // 0-1, higher = less smoothing
+let previousMask = null;
+
+// Flag to control segmentation updates (every other frame for performance)
+let shouldUpdateML5 = true;
 
 function preload() {
   // Pose model (BlazePose recommended)
@@ -82,8 +89,12 @@ function setup() {
   video.size(640, 480);
   video.hide();
 
-  bodyPose.detectStart(video, r => poses = r);
-  bodySegmentation.detectStart(video, r => segmentation = r);
+  bodyPose.detectStart(video, r => {
+    poses = r; // Always update poses for smooth skeleton
+  });
+  bodySegmentation.detectStart(video, r => {
+    if (shouldUpdateML5) segmentation = r; // Only update segmentation every other frame
+  });
 
   if (bodyPose.getSkeleton) connections = bodyPose.getSkeleton() || [];
   lastTime = millis();
@@ -97,6 +108,9 @@ function keyPressed() {
 function draw() {
   background(0);
   frameCounter++;
+
+  // Toggle segmentation updates every other frame for performance
+  shouldUpdateML5 = (frameCounter % 2 === 0);
 
   // --- FPS calculation ---
   fpsFrameCount++;
@@ -165,8 +179,9 @@ function draw() {
 
   // --- segmented person on top ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
+    const smoothedMask = smoothMask(segmentation.mask);
     const masked = video.get();
-    masked.mask(segmentation.mask);
+    masked.mask(smoothedMask);
     image(masked, 0, 0, width, height);
   }
 
@@ -188,6 +203,32 @@ function draw() {
     text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
     text(`[D] HUD  [S] skeleton  gain:${SPEED_GAIN} (x2 local)  deadzone:${MOTION_DEADZONE}`, 20, 78);
   }
+}
+
+/* ---------------- Segmentation Mask Smoothing ---------------- */
+function smoothMask(currentMask) {
+  if (!currentMask) return null;
+  
+  // Initialize on first frame
+  if (!previousMask) {
+    previousMask = currentMask.get();
+    return currentMask;
+  }
+  
+  // Create smoothed mask by blending current and previous
+  currentMask.loadPixels();
+  previousMask.loadPixels();
+  
+  for (let i = 0; i < currentMask.pixels.length; i++) {
+    // Blend: smoothed = α * current + (1 - α) * previous
+    currentMask.pixels[i] = MASK_SMOOTH_ALPHA * currentMask.pixels[i] + 
+                            (1 - MASK_SMOOTH_ALPHA) * previousMask.pixels[i];
+  }
+  
+  currentMask.updatePixels();
+  previousMask = currentMask.get(); // Store for next frame
+  
+  return currentMask;
 }
 
 /* ---------------- Simple Exponential Smoothing ---------------- */
