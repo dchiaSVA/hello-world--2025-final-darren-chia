@@ -62,6 +62,11 @@ let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
+// Adaptive SES smoothing for skeleton
+const SES_ALPHA_FAST = 0.90; // when moving (responsive)
+const SES_ALPHA_SLOW = 0.70; // when idle (smooth out jitter)
+let smoothedKeypoints = null;
+
 function preload() {
   // Pose model (BlazePose recommended)
   bodyPose = ml5.bodyPose('BlazePose');  // or ml5.bodyPose() for MoveNet
@@ -167,7 +172,10 @@ function draw() {
   }
 
   // --- skeleton + chest direction ---
-  if (showSkeleton && poses && poses.length) drawSkeletonAndChest(poses);
+  if (showSkeleton && poses && poses.length) {
+    const smoothed = smoothKeypoints(poses);
+    drawSkeletonAndChest(smoothed);
+  }
 
   // --- HUD ---
   if (showDebug) {
@@ -181,6 +189,35 @@ function draw() {
     text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
     text(`[D] HUD  [S] skeleton  gain:${SPEED_GAIN} (x2 local)  deadzone:${MOTION_DEADZONE}`, 20, 78);
   }
+}
+
+/* ---------------- Adaptive Simple Exponential Smoothing ---------------- */
+function smoothKeypoints(poses) {
+  if (!poses || !poses.length || !poses[0].keypoints) {
+    smoothedKeypoints = null;
+    return poses;
+  }
+  
+  const currentKeypoints = poses[0].keypoints;
+  
+  // Initialize on first frame
+  if (!smoothedKeypoints || smoothedKeypoints.length !== currentKeypoints.length) {
+    smoothedKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
+    return poses;
+  }
+  
+  // Apply SES with adaptive alpha: S_t = α * Y_t + (1 - α) * S_(t-1)
+  // Alpha varies based on speed: fast movement = high alpha (responsive), slow/idle = low alpha (smooth)
+  const adaptiveAlpha = map(spdLP2, 0, 0.5, SES_ALPHA_SLOW, SES_ALPHA_FAST, true);
+  
+  for (let i = 0; i < currentKeypoints.length; i++) {
+    smoothedKeypoints[i].x = adaptiveAlpha * currentKeypoints[i].x + (1 - adaptiveAlpha) * smoothedKeypoints[i].x;
+    smoothedKeypoints[i].y = adaptiveAlpha * currentKeypoints[i].y + (1 - adaptiveAlpha) * smoothedKeypoints[i].y;
+    smoothedKeypoints[i].confidence = currentKeypoints[i].confidence;
+    smoothedKeypoints[i].name = currentKeypoints[i].name;
+  }
+  
+  return [{...poses[0], keypoints: smoothedKeypoints}];
 }
 
 /* ---------------- Skeleton + Chest Direction ---------------- */
