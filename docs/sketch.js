@@ -65,7 +65,7 @@ let fpsFrameCount = 0;
 // Adaptive SES smoothing for skeleton with prediction
 const SES_ALPHA_FAST = 0.75; // smooth but responsive
 const SES_ALPHA_SLOW = 0.50; // butter smooth when idle
-const PREDICTION_FACTOR = 0.5; // how much to predict ahead (0-0.5 recommended)
+const PREDICTION_FACTOR = 0.6; // how much to predict ahead (0-0.5 recommended)
 let smoothedKeypoints = null;
 let previousKeypoints = null; // for velocity prediction
 
@@ -82,7 +82,7 @@ function setup() {
   pixelDensity(1);
 
   video = createCapture(VIDEO);
-  video.size(640, 480);
+  video.size(320, 240); // Reduced resolution for better performance
   video.hide();
 
   bodyPose.detectStart(video, r => poses = r);
