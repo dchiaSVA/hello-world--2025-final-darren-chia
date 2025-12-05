@@ -62,6 +62,7 @@ let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
+<<<<<<< HEAD
 // SES smoothing for skeleton
 const SES_ALPHA = 0.55; // smoothing factor (higher = less smoothing, more responsive)
 let smoothedKeypoints = null;
@@ -73,6 +74,8 @@ let previousMask = null;
 // Flag to control segmentation updates (every other frame for performance)
 let shouldUpdateML5 = true;
 
+=======
+>>>>>>> parent of 1ad4648 (Simple Exponential Smoothing)
 function preload() {
   // Pose model (BlazePose recommended)
   bodyPose = ml5.bodyPose('BlazePose');  // or ml5.bodyPose() for MoveNet
@@ -186,10 +189,7 @@ function draw() {
   }
 
   // --- skeleton + chest direction ---
-  if (showSkeleton && poses && poses.length) {
-    const smoothed = smoothKeypoints(poses);
-    drawSkeletonAndChest(smoothed);
-  }
+  if (showSkeleton && poses && poses.length) drawSkeletonAndChest(poses);
 
   // --- HUD ---
   if (showDebug) {
@@ -205,6 +205,7 @@ function draw() {
   }
 }
 
+<<<<<<< HEAD
 /* ---------------- Segmentation Mask Smoothing ---------------- */
 function smoothMask(currentMask) {
   if (!currentMask) return null;
@@ -257,6 +258,8 @@ function smoothKeypoints(poses) {
   return [{...poses[0], keypoints: smoothedKeypoints}];
 }
 
+=======
+>>>>>>> parent of 1ad4648 (Simple Exponential Smoothing)
 /* ---------------- Skeleton + Chest Direction ---------------- */
 function drawSkeletonAndChest(poses) {
   const sX = width / video.width;
