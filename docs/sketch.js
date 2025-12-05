@@ -62,10 +62,12 @@ let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
-// Adaptive SES smoothing for skeleton
-const SES_ALPHA_FAST = 0.90; // when moving (responsive)
-const SES_ALPHA_SLOW = 0.70; // when idle (smooth out jitter)
+// Adaptive SES smoothing for skeleton with prediction
+const SES_ALPHA_FAST = 0.75; // smooth but responsive
+const SES_ALPHA_SLOW = 0.50; // butter smooth when idle
+const PREDICTION_FACTOR = 0.5; // how much to predict ahead (0-0.5 recommended)
 let smoothedKeypoints = null;
+let previousKeypoints = null; // for velocity prediction
 
 function preload() {
   // Pose model (BlazePose recommended)
@@ -191,10 +193,11 @@ function draw() {
   }
 }
 
-/* ---------------- Adaptive Simple Exponential Smoothing ---------------- */
+/* ---------------- Adaptive Simple Exponential Smoothing with Prediction ---------------- */
 function smoothKeypoints(poses) {
   if (!poses || !poses.length || !poses[0].keypoints) {
     smoothedKeypoints = null;
+    previousKeypoints = null;
     return poses;
   }
   
@@ -203,16 +206,31 @@ function smoothKeypoints(poses) {
   // Initialize on first frame
   if (!smoothedKeypoints || smoothedKeypoints.length !== currentKeypoints.length) {
     smoothedKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
+    previousKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
     return poses;
   }
   
   // Apply SES with adaptive alpha: S_t = α * Y_t + (1 - α) * S_(t-1)
-  // Alpha varies based on speed: fast movement = high alpha (responsive), slow/idle = low alpha (smooth)
+  // Alpha varies based on speed: fast movement = higher alpha (more responsive), slow/idle = lower alpha (butter smooth)
   const adaptiveAlpha = map(spdLP2, 0, 0.5, SES_ALPHA_SLOW, SES_ALPHA_FAST, true);
   
   for (let i = 0; i < currentKeypoints.length; i++) {
-    smoothedKeypoints[i].x = adaptiveAlpha * currentKeypoints[i].x + (1 - adaptiveAlpha) * smoothedKeypoints[i].x;
-    smoothedKeypoints[i].y = adaptiveAlpha * currentKeypoints[i].y + (1 - adaptiveAlpha) * smoothedKeypoints[i].y;
+    // Calculate velocity from previous frame
+    const velocityX = smoothedKeypoints[i].x - previousKeypoints[i].x;
+    const velocityY = smoothedKeypoints[i].y - previousKeypoints[i].y;
+    
+    // Apply smoothing
+    const smoothX = adaptiveAlpha * currentKeypoints[i].x + (1 - adaptiveAlpha) * smoothedKeypoints[i].x;
+    const smoothY = adaptiveAlpha * currentKeypoints[i].y + (1 - adaptiveAlpha) * smoothedKeypoints[i].y;
+    
+    // Add prediction to reduce perceived lag (only when moving)
+    const predictionStrength = map(spdLP2, 0, 0.5, 0, PREDICTION_FACTOR, true);
+    
+    previousKeypoints[i].x = smoothedKeypoints[i].x;
+    previousKeypoints[i].y = smoothedKeypoints[i].y;
+    
+    smoothedKeypoints[i].x = smoothX + velocityX * predictionStrength;
+    smoothedKeypoints[i].y = smoothY + velocityY * predictionStrength;
     smoothedKeypoints[i].confidence = currentKeypoints[i].confidence;
     smoothedKeypoints[i].name = currentKeypoints[i].name;
   }
