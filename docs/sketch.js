@@ -62,10 +62,6 @@ let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
-// SES smoothing for skeleton
-const SES_ALPHA = 0.65; // smoothing factor (higher = less smoothing, more responsive)
-let smoothedKeypoints = null;
-
 function preload() {
   // Pose model (BlazePose recommended)
   bodyPose = ml5.bodyPose('BlazePose');  // or ml5.bodyPose() for MoveNet
@@ -171,10 +167,7 @@ function draw() {
   }
 
   // --- skeleton + chest direction ---
-  if (showSkeleton && poses && poses.length) {
-    const smoothed = smoothKeypoints(poses);
-    drawSkeletonAndChest(smoothed);
-  }
+  if (showSkeleton && poses && poses.length) drawSkeletonAndChest(poses);
 
   // --- HUD ---
   if (showDebug) {
@@ -188,32 +181,6 @@ function draw() {
     text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
     text(`[D] HUD  [S] skeleton  gain:${SPEED_GAIN} (x2 local)  deadzone:${MOTION_DEADZONE}`, 20, 78);
   }
-}
-
-/* ---------------- Simple Exponential Smoothing ---------------- */
-function smoothKeypoints(poses) {
-  if (!poses || !poses.length || !poses[0].keypoints) {
-    smoothedKeypoints = null;
-    return poses;
-  }
-  
-  const currentKeypoints = poses[0].keypoints;
-  
-  // Initialize on first frame
-  if (!smoothedKeypoints || smoothedKeypoints.length !== currentKeypoints.length) {
-    smoothedKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
-    return poses;
-  }
-  
-  // Apply SES: S_t = α * Y_t + (1 - α) * S_(t-1)
-  for (let i = 0; i < currentKeypoints.length; i++) {
-    smoothedKeypoints[i].x = SES_ALPHA * currentKeypoints[i].x + (1 - SES_ALPHA) * smoothedKeypoints[i].x;
-    smoothedKeypoints[i].y = SES_ALPHA * currentKeypoints[i].y + (1 - SES_ALPHA) * smoothedKeypoints[i].y;
-    smoothedKeypoints[i].confidence = currentKeypoints[i].confidence;
-    smoothedKeypoints[i].name = currentKeypoints[i].name;
-  }
-  
-  return [{...poses[0], keypoints: smoothedKeypoints}];
 }
 
 /* ---------------- Skeleton + Chest Direction ---------------- */
