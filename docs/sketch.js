@@ -35,7 +35,7 @@ let satNow = SAT_MIN;
 let briNow = BRI_MIN;
 
 // Faster tracking of motion
-const SMOOTH_SPEED_1  = 0.38;
+const SMOOTH_SPEED_1  = 0.48;
 const SMOOTH_SPEED_2  = 0.28;
 const MOTION_DEADZONE = 0.080;
 const SPEED_GAIN      = 2.0;  // motion sensitivity
@@ -62,12 +62,10 @@ let fps = 0;
 let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
-// Adaptive SES smoothing for skeleton with prediction
-const SES_ALPHA_FAST = 0.75; // smooth but responsive
-const SES_ALPHA_SLOW = 0.50; // butter smooth when idle
-const PREDICTION_FACTOR = 0.6; // how much to predict ahead (0-0.5 recommended)
-let smoothedKeypoints = null;
-let previousKeypoints = null; // for velocity prediction
+// Kalman filter smoothing for skeleton
+const PROCESS_NOISE = 0.18;     // Process noise (lower = smoother, more lag)
+const MEASUREMENT_NOISE = 4;    // Measurement noise (higher = trust prediction more)
+let kalmanFilters = [];         // One Kalman filter per keypoint
 
 function preload() {
   // Pose model (BlazePose recommended)
@@ -193,49 +191,106 @@ function draw() {
   }
 }
 
-/* ---------------- Adaptive Simple Exponential Smoothing with Prediction ---------------- */
+/* ---------------- Kalman Filter 2D (state: [x, y, vx, vy]) ---------------- */
+class KalmanFilter2D {
+  constructor(processNoise, measurementNoise) {
+    // State: [x, y, vx, vy]
+    this.state = [0, 0, 0, 0];
+    
+    // Error covariance matrix (4x4, simplified as diagonal)
+    this.P = [1000, 1000, 1000, 1000];
+    
+    // Process noise
+    this.Q = processNoise;
+    
+    // Measurement noise
+    this.R = measurementNoise;
+    
+    this.initialized = false;
+  }
+  
+  predict(dt = 1/60) {
+    // Predict next state: x = x + vx*dt, y = y + vy*dt
+    this.state[0] += this.state[2] * dt;
+    this.state[1] += this.state[3] * dt;
+    
+    // Update error covariance
+    this.P[0] += this.Q;
+    this.P[1] += this.Q;
+    this.P[2] += this.Q;
+    this.P[3] += this.Q;
+  }
+  
+  update(measuredX, measuredY) {
+    if (!this.initialized) {
+      this.state = [measuredX, measuredY, 0, 0];
+      this.initialized = true;
+      return;
+    }
+    
+    // Kalman gain for position
+    const Kx = this.P[0] / (this.P[0] + this.R);
+    const Ky = this.P[1] / (this.P[1] + this.R);
+    
+    // Update position state with measurement
+    const innovationX = measuredX - this.state[0];
+    const innovationY = measuredY - this.state[1];
+    
+    this.state[0] += Kx * innovationX;
+    this.state[1] += Ky * innovationY;
+    
+    // Update velocity based on innovation
+    const Kv = 0.3; // Velocity learning rate
+    this.state[2] += Kv * innovationX;
+    this.state[3] += Kv * innovationY;
+    
+    // Update error covariance
+    this.P[0] *= (1 - Kx);
+    this.P[1] *= (1 - Ky);
+  }
+  
+  getPosition() {
+    return { x: this.state[0], y: this.state[1] };
+  }
+}
+
+/* ---------------- Apply Kalman Filter to Skeleton ---------------- */
 function smoothKeypoints(poses) {
   if (!poses || !poses.length || !poses[0].keypoints) {
-    smoothedKeypoints = null;
-    previousKeypoints = null;
+    kalmanFilters = [];
     return poses;
   }
   
   const currentKeypoints = poses[0].keypoints;
   
-  // Initialize on first frame
-  if (!smoothedKeypoints || smoothedKeypoints.length !== currentKeypoints.length) {
-    smoothedKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
-    previousKeypoints = currentKeypoints.map(kp => ({...kp, x: kp.x, y: kp.y}));
-    return poses;
+  // Initialize Kalman filters on first frame
+  if (kalmanFilters.length !== currentKeypoints.length) {
+    kalmanFilters = currentKeypoints.map(() => 
+      new KalmanFilter2D(PROCESS_NOISE, MEASUREMENT_NOISE)
+    );
   }
   
-  // Apply SES with adaptive alpha: S_t = α * Y_t + (1 - α) * S_(t-1)
-  // Alpha varies based on speed: fast movement = higher alpha (more responsive), slow/idle = lower alpha (butter smooth)
-  const adaptiveAlpha = map(spdLP2, 0, 0.5, SES_ALPHA_SLOW, SES_ALPHA_FAST, true);
+  // Apply Kalman filter to each keypoint
+  const dt = 1/60; // Assume 60 FPS
+  const smoothedKps = currentKeypoints.map((kp, i) => {
+    const filter = kalmanFilters[i];
+    
+    // Predict then update with measurement
+    filter.predict(dt);
+    filter.update(kp.x, kp.y);
+    
+    // Get filtered position
+    const filtered = filter.getPosition();
+    
+    return {
+      x: filtered.x,
+      y: filtered.y,
+      confidence: kp.confidence,
+      name: kp.name
+    };
+  });
   
-  for (let i = 0; i < currentKeypoints.length; i++) {
-    // Calculate velocity from previous frame
-    const velocityX = smoothedKeypoints[i].x - previousKeypoints[i].x;
-    const velocityY = smoothedKeypoints[i].y - previousKeypoints[i].y;
-    
-    // Apply smoothing
-    const smoothX = adaptiveAlpha * currentKeypoints[i].x + (1 - adaptiveAlpha) * smoothedKeypoints[i].x;
-    const smoothY = adaptiveAlpha * currentKeypoints[i].y + (1 - adaptiveAlpha) * smoothedKeypoints[i].y;
-    
-    // Add prediction to reduce perceived lag (only when moving)
-    const predictionStrength = map(spdLP2, 0, 0.5, 0, PREDICTION_FACTOR, true);
-    
-    previousKeypoints[i].x = smoothedKeypoints[i].x;
-    previousKeypoints[i].y = smoothedKeypoints[i].y;
-    
-    smoothedKeypoints[i].x = smoothX + velocityX * predictionStrength;
-    smoothedKeypoints[i].y = smoothY + velocityY * predictionStrength;
-    smoothedKeypoints[i].confidence = currentKeypoints[i].confidence;
-    smoothedKeypoints[i].name = currentKeypoints[i].name;
-  }
-  
-  return [{...poses[0], keypoints: smoothedKeypoints}];
+  return [{...poses[0], keypoints: smoothedKps}];
 }
 
 /* ---------------- Skeleton + Chest Direction ---------------- */
