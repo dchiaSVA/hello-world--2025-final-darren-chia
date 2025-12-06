@@ -38,7 +38,7 @@ let briNow = BRI_MIN;
 const SMOOTH_SPEED_1  = 0.48;
 const SMOOTH_SPEED_2  = 0.28;
 const MOTION_DEADZONE = 0.080;
-const SPEED_GAIN      = 2.0;  // motion sensitivity
+const SPEED_GAIN      = 4.0;  // motion sensitivity
 
 // Faster easing to target colors
 const ACTIVE_TAU_SEC  = 0.80; // approach when moving (fast)
@@ -63,15 +63,18 @@ let fpsUpdateTime = 0;
 let fpsFrameCount = 0;
 
 // Kalman filter smoothing for skeleton
-const PROCESS_NOISE = 0.18;     // Process noise (lower = smoother, more lag)
-const MEASUREMENT_NOISE = 4;    // Measurement noise (higher = trust prediction more)
+const PROCESS_NOISE = 0.3;     // Process noise (lower = smoother, more lag)
+const MEASUREMENT_NOISE = 3;    // Measurement noise (higher = trust prediction more)
 let kalmanFilters = [];         // One Kalman filter per keypoint
 
 function preload() {
   // Pose model (BlazePose recommended)
   bodyPose = ml5.bodyPose('BlazePose');  // or ml5.bodyPose() for MoveNet
-  // Segmentation (keeps foreground person)
-  bodySegmentation = ml5.bodySegmentation('SelfieSegmentation', { maskType: 'background' });
+  // Segmentation (keeps foreground person with smoothing)
+  bodySegmentation = ml5.bodySegmentation('SelfieSegmentation', { 
+    maskType: 'background',
+    smoothSegmentation: true  // Enable temporal smoothing for mask
+  });
 }
 
 function setup() {
@@ -240,7 +243,7 @@ class KalmanFilter2D {
     this.state[1] += Ky * innovationY;
     
     // Update velocity based on innovation
-    const Kv = 0.3; // Velocity learning rate
+    const Kv = 0.25; // Velocity learning rate
     this.state[2] += Kv * innovationX;
     this.state[3] += Kv * innovationY;
     
