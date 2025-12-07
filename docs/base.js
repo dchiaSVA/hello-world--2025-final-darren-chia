@@ -159,7 +159,7 @@ function draw() {
     // SES temporal smoothing for mask stability
     if (!smoothedMask) {
       smoothedMask = processedMask.get();
-    } else {
+    } else if (frameCounter % 2 === 0) {
       smoothedMask.loadPixels();
       processedMask.loadPixels();
       for (let i = 0; i < smoothedMask.pixels.length; i++) {
