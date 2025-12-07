@@ -17,7 +17,7 @@ let connections = [];
 let segmentation = null;
 
 /* ---------- Visuals ---------- */
-const BAND_COUNT = 270;       // background bands
+const BAND_COUNT = 360;       // background bands
 const SHOW_MASKED_VIDEO = true;
 
 /* ---------- Color palette (Yellow → Red) ---------- */
@@ -56,10 +56,8 @@ const PROCESS_NOISE = 0.3;
 const MEASUREMENT_NOISE = 3;
 let kalmanFilters = [];
 
-// Adaptive SES for segmentation mask smoothing
-const MASK_ALPHA_IDLE = 0.3;  // smooth when idle
-const MASK_ALPHA_FAST = 0.85; // very responsive when moving
-const MASK_SPEED_MAX = 0.4;   // speed threshold for full responsiveness
+// SES for segmentation mask smoothing
+const MASK_SES_ALPHA = 0.3; // 0.3-0.5 recommended, higher = more responsive
 let smoothedMask = null;
 
 function preload() {
@@ -151,29 +149,21 @@ function draw() {
     briNow = lerp(briNow,   briTarget, aSB);
   }
 
-  // --- background gradient (bright & fast-reacting) ---
-  noStroke();
-  const bandH = height / BAND_COUNT;
-  for (let i = 0; i < BAND_COUNT; i++) {
-    fill(hueNow, satNow, briNow);
-    rect(0, i * bandH, width, bandH + 1);
-  }
+  // --- background (solid color) ---
+  background(hueNow, satNow, briNow);
 
   // --- segmented person on top ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
     const processedMask = segmentation.mask.get();
     
-    // Adaptive SES temporal smoothing for mask stability
+    // SES temporal smoothing for mask stability
     if (!smoothedMask) {
       smoothedMask = processedMask.get();
     } else {
-      // Adaptive alpha: smooth when idle, responsive when moving
-      const adaptiveAlpha = map(spdLP2, 0, MASK_SPEED_MAX, MASK_ALPHA_IDLE, MASK_ALPHA_FAST, true);
-      
       smoothedMask.loadPixels();
       processedMask.loadPixels();
       for (let i = 0; i < smoothedMask.pixels.length; i++) {
-        smoothedMask.pixels[i] = lerp(smoothedMask.pixels[i], processedMask.pixels[i], adaptiveAlpha);
+        smoothedMask.pixels[i] = lerp(smoothedMask.pixels[i], processedMask.pixels[i], MASK_SES_ALPHA);
       }
       smoothedMask.updatePixels();
     }
