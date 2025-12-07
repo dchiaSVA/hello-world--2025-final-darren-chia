@@ -52,8 +52,8 @@ let frameCounter = 0;
 let fps = 0, fpsUpdateTime = 0, fpsFrameCount = 0;
 
 // Kalman filter for skeleton smoothing
-const PROCESS_NOISE = 0.3;
-const MEASUREMENT_NOISE = 3;
+const PROCESS_NOISE = 0.8;    // higher = less trust in predictions
+const MEASUREMENT_NOISE = 1.5; // lower = more trust in ML5 measurements (more responsive)
 let kalmanFilters = [];
 
 // SES for segmentation mask smoothing
@@ -70,7 +70,6 @@ function preload() {
 
 function setup() {
   createCanvas(640, 480);
-  smooth(); // Enable anti-aliasing for smoother edges
   colorMode(HSB, 360, 100, 100, 100);
   
   video = createCapture(VIDEO);
@@ -160,7 +159,7 @@ function draw() {
     // SES temporal smoothing for mask stability
     if (!smoothedMask) {
       smoothedMask = processedMask.get();
-    } else if (frameCounter % 2 === 0) {
+    } else {
       smoothedMask.loadPixels();
       processedMask.loadPixels();
       for (let i = 0; i < smoothedMask.pixels.length; i++) {
@@ -243,7 +242,7 @@ class KalmanFilter2D {
     this.state[1] += Ky * innovationY;
     
     // Update velocity based on innovation
-    const Kv = 0.25; // Velocity learning rate
+    const Kv = 0.5; // Velocity learning rate (higher = faster catch-up)
     this.state[2] += Kv * innovationX;
     this.state[3] += Kv * innovationY;
     
