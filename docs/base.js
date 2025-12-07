@@ -70,6 +70,7 @@ function preload() {
 
 function setup() {
   createCanvas(640, 480);
+  smooth(); // Enable anti-aliasing for smoother edges
   colorMode(HSB, 360, 100, 100, 100);
   
   video = createCapture(VIDEO);
