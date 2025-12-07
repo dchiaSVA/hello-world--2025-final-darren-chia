@@ -83,7 +83,7 @@ function setup() {
   pixelDensity(1);
 
   video = createCapture(VIDEO);
-  video.size(240, 180); // Medium resolution for balance of quality and performance
+  video.size(320, 240); // Higher resolution for better segmentation edges
   video.hide();
 
   bodyPose.detectStart(video, r => poses = r);

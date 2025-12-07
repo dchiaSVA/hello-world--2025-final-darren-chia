@@ -1,5 +1,5 @@
 /*
- * BODY-DRIVEN Speed Map (Yellow → Red)
+ * BODY-DRIVEN Speed Map (Yellow → Red) - VARIATION 3
  * Idle = bright yellow, Fast = deep red
  * Turbo responsive + optional quick snap-back
  * + Skeleton, Virtual Chest, Facing Arrow
@@ -66,6 +66,14 @@ let fpsFrameCount = 0;
 const PROCESS_NOISE = 0.3;     // Process noise (lower = smoother, more lag)
 const MEASUREMENT_NOISE = 3;    // Measurement noise (higher = trust prediction more)
 let kalmanFilters = [];         // One Kalman filter per keypoint
+
+// Afterimage effect
+const AFTERIMAGE_FADE_RATE = 0.05;  // How fast afterimages fade (lower = longer lasting)
+const AFTERIMAGE_SPAWN_RATE = 2;    // Spawn afterimage every N frames
+let afterimages = [];               // Array of {img, opacity, color} objects
+const MAX_AFTERIMAGES = 15;         // Max afterimages to store
+const RGB_COLORS = [[255, 0, 0], [0, 255, 0], [0, 0, 255]]; // Red, Green, Blue
+let colorIndex = 0;                 // Cycles through RGB
 
 function preload() {
   // Pose model (BlazePose recommended)
@@ -167,10 +175,48 @@ function draw() {
     rect(0, i * bandH, width, bandH + 1);
   }
 
-  // --- segmented person on top ---
+  // --- segmented person on top with afterimage effect ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
     const masked = video.get();
     masked.mask(segmentation.mask);
+    
+    // Spawn new afterimage periodically with cycling RGB color
+    if (frameCounter % AFTERIMAGE_SPAWN_RATE === 0) {
+      afterimages.push({
+        img: masked.get(),
+        opacity: 0.8,  // Starting opacity
+        color: RGB_COLORS[colorIndex]
+      });
+      colorIndex = (colorIndex + 1) % 3; // Cycle through R, G, B
+      // Limit max afterimages
+      if (afterimages.length > MAX_AFTERIMAGES) {
+        afterimages.shift();
+      }
+    }
+    
+    // Draw and fade afterimages
+    push();
+    colorMode(RGB, 255);
+    for (let i = afterimages.length - 1; i >= 0; i--) {
+      const ghost = afterimages[i];
+      
+      // Fade the afterimage
+      ghost.opacity -= AFTERIMAGE_FADE_RATE;
+      
+      // Remove fully faded afterimages
+      if (ghost.opacity <= 0) {
+        afterimages.splice(i, 1);
+        continue;
+      }
+      
+      // Draw with RGB color cycling
+      tint(ghost.color[0], ghost.color[1], ghost.color[2], ghost.opacity * 255);
+      image(ghost.img, 0, 0, width, height);
+    }
+    pop();
+    
+    // Draw current frame at full opacity
+    noTint();
     image(masked, 0, 0, width, height);
   }
 
