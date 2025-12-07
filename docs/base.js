@@ -20,32 +20,22 @@ let segmentation = null;
 const BAND_COUNT = 360;       // background bands
 const SHOW_MASKED_VIDEO = true;
 
-/* ---------- Color palette (reversed: Yellow → Red) ---------- */
-// Yellow is the slow/idle end; Red is the fast end
+/* ---------- Color palette (Yellow → Red) ---------- */
 const RED_HUE   = 5;          // fast end (deeper red)
 const YEL_HUE   = 57;         // slow end (bright yellow)
-
-// Slightly narrower saturation + brighter idle so yellow is vivid
 const SAT_MIN   = 85, SAT_MAX = 98;
 const BRI_MIN   = 90, BRI_MAX = 100;
 
-/* ---------- Turbo responsiveness ---------- */
-let hueNow = YEL_HUE;         // start at yellow
-let satNow = SAT_MIN;
-let briNow = BRI_MIN;
-
-// Faster tracking of motion
+/* ---------- Motion tracking ---------- */
 const SMOOTH_SPEED_1  = 0.48;
 const SMOOTH_SPEED_2  = 0.28;
 const MOTION_DEADZONE = 0.080;
-const SPEED_GAIN      = 3.0;  // motion sensitivity
+const SPEED_GAIN      = 3.0;
 
-// Faster easing to target colors
-const ACTIVE_TAU_SEC  = 0.80; // approach when moving (fast)
-const IDLE_TAU_SEC    = 0.35; // return when idle (quick snap-back)
+/* ---------- Color transitions ---------- */
+const ACTIVE_TAU_SEC  = 0.80; // approach when moving
+const IDLE_TAU_SEC    = 0.35; // return when idle
 const SATBRI_TAU_SEC  = 0.40; // sat/bright glide
-
-// Idle hysteresis
 const IDLE_ENTER      = 0.010; // below => idle
 const IDLE_EXIT       = 0.020; // above => active
 
@@ -54,41 +44,37 @@ let spdRaw = 0, spdLP1 = 0, spdLP2 = 0;
 let isIdle = true;
 let showDebug = true;
 let showSkeleton = true;
+let hueNow = YEL_HUE, satNow = SAT_MIN, briNow = BRI_MIN;
 
-let lastPts = null;  // for velocity
+let lastPts = null;
 let lastTime = 0;
-let frameCounter = 0; // for updating background every other frame
-let fps = 0;
-let fpsUpdateTime = 0;
-let fpsFrameCount = 0;
+let frameCounter = 0;
+let fps = 0, fpsUpdateTime = 0, fpsFrameCount = 0;
 
-// Kalman filter smoothing for skeleton
-const PROCESS_NOISE = 0.3;     // Process noise (lower = smoother, more lag)
-const MEASUREMENT_NOISE = 3;    // Measurement noise (higher = trust prediction more)
-let kalmanFilters = [];         // One Kalman filter per keypoint
+// Kalman filter for skeleton smoothing
+const PROCESS_NOISE = 0.3;
+const MEASUREMENT_NOISE = 3;
+let kalmanFilters = [];
 
 function preload() {
-  // Pose model (BlazePose recommended)
-  bodyPose = ml5.bodyPose('BlazePose');  // or ml5.bodyPose() for MoveNet
-  // Segmentation (keeps foreground person with smoothing)
+  bodyPose = ml5.bodyPose('BlazePose');
   bodySegmentation = ml5.bodySegmentation('SelfieSegmentation', { 
     maskType: 'background',
-    smoothSegmentation: true  // Enable temporal smoothing for mask
+    smoothSegmentation: true
   });
 }
 
 function setup() {
   createCanvas(640, 480);
   colorMode(HSB, 360, 100, 100, 100);
-  pixelDensity(1);
-
+  
   video = createCapture(VIDEO);
-  video.size(320, 240); // Higher resolution for better segmentation edges
+  video.size(320, 240);
   video.hide();
 
   bodyPose.detectStart(video, r => poses = r);
   bodySegmentation.detectStart(video, r => segmentation = r);
-
+  
   if (bodyPose.getSkeleton) connections = bodyPose.getSkeleton() || [];
   lastTime = millis();
 }
@@ -169,8 +155,11 @@ function draw() {
 
   // --- segmented person on top ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
+    const processedMask = segmentation.mask.get();
+    processedMask.filter(DILATE); // Expand mask to reduce edge clipping
+    
     const masked = video.get();
-    masked.mask(segmentation.mask);
+    masked.mask(processedMask);
     image(masked, 0, 0, width, height);
   }
 
