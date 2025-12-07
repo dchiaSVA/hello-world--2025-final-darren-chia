@@ -17,7 +17,7 @@ let connections = [];
 let segmentation = null;
 
 /* ---------- Visuals ---------- */
-const BAND_COUNT = 360;       // background bands
+const BAND_COUNT = 270;       // background bands
 const SHOW_MASKED_VIDEO = true;
 
 /* ---------- Color palette (Yellow → Red) ---------- */
@@ -55,6 +55,12 @@ let fps = 0, fpsUpdateTime = 0, fpsFrameCount = 0;
 const PROCESS_NOISE = 0.3;
 const MEASUREMENT_NOISE = 3;
 let kalmanFilters = [];
+
+// Adaptive SES for segmentation mask smoothing
+const MASK_ALPHA_IDLE = 0.3;  // smooth when idle
+const MASK_ALPHA_FAST = 0.85; // very responsive when moving
+const MASK_SPEED_MAX = 0.4;   // speed threshold for full responsiveness
+let smoothedMask = null;
 
 function preload() {
   bodyPose = ml5.bodyPose('BlazePose');
@@ -156,10 +162,24 @@ function draw() {
   // --- segmented person on top ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
     const processedMask = segmentation.mask.get();
-    processedMask.filter(DILATE); // Expand mask to reduce edge clipping
+    
+    // Adaptive SES temporal smoothing for mask stability
+    if (!smoothedMask) {
+      smoothedMask = processedMask.get();
+    } else {
+      // Adaptive alpha: smooth when idle, responsive when moving
+      const adaptiveAlpha = map(spdLP2, 0, MASK_SPEED_MAX, MASK_ALPHA_IDLE, MASK_ALPHA_FAST, true);
+      
+      smoothedMask.loadPixels();
+      processedMask.loadPixels();
+      for (let i = 0; i < smoothedMask.pixels.length; i++) {
+        smoothedMask.pixels[i] = lerp(smoothedMask.pixels[i], processedMask.pixels[i], adaptiveAlpha);
+      }
+      smoothedMask.updatePixels();
+    }
     
     const masked = video.get();
-    masked.mask(processedMask);
+    masked.mask(smoothedMask);
     image(masked, 0, 0, width, height);
   }
 
