@@ -45,7 +45,6 @@ let isIdle = true;
 let showDebug = true;
 let showSkeleton = true;
 let hueNow = YEL_HUE, satNow = SAT_MIN, briNow = BRI_MIN;
-let ringPhase = 0; // For pulsing rings effect
 
 let lastPts = null;
 let lastTime = 0;
@@ -150,27 +149,8 @@ function draw() {
     briNow = lerp(briNow,   briTarget, aSB);
   }
 
-  // --- background with vignette ---
+  // --- background (solid color) ---
   background(hueNow, satNow, briNow);
-  // Vignette overlay (extremely subtle)
-  noStroke();
-  const maxR = max(width, height) * 1.05; // Very tight
-  for (let r = maxR; r > maxR * 0.85; r -= 8) { // Only outer 15%
-    const t = 1 - (r / maxR);
-    fill(0, 0, 0, t * 1.5); // Almost invisible
-    ellipse(width / 2, height / 2, r, r * 0.85);
-  }
-
-  // --- pulsing rings (speed reactive) ---
-  ringPhase += spdLP2 * 8; // Faster when moving
-  noFill();
-  strokeWeight(2);
-  for (let i = 0; i < 5; i++) {
-    const r = ((ringPhase + i * 100) % 600);
-    const alpha = map(r, 0, 600, 40, 0); // Fade out as they expand
-    stroke(hueNow, satNow, briNow + 10, alpha);
-    ellipse(width / 2, height / 2, r * 2, r * 2);
-  }
 
   // --- segmented person on top ---
   if (SHOW_MASKED_VIDEO && segmentation && segmentation.mask) {
