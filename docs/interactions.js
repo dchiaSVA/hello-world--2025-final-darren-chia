@@ -43,8 +43,13 @@ let connections = [];
 let segmentation = null;
 
 /* ---------- Visual Configuration ---------- */
-const BAND_COUNT = 360;       // Number of background bands (currently unused)
 const SHOW_MASKED_VIDEO = true; // Whether to show segmented video
+
+// Internal rendering resolution (smaller for performance, centered on screen)
+const RENDER_WIDTH = 960;
+const RENDER_HEIGHT = 720;
+let renderOffsetX = 0;  // Calculated in setup
+let renderOffsetY = 0;
 
 /* ---------- Color Palette (Yellow → Red) ----------
    Enhancement suggestions:
@@ -82,7 +87,10 @@ let showDebug = true; // Show debug HUD
 let showSkeleton = true; // Show skeleton overlay
 let showFluid = true; // Show fluid simulation
 let hueNow = YEL_HUE, satNow = SAT_MIN, briNow = BRI_MIN; // Current HSB values
-let ringPhase = 0; // Phase for pulsing rings effect (when fluid disabled)
+
+/* ---------- Color Cycling Configuration ---------- */
+let colorCycleOffset = 0;        // Current hue offset for cycling
+const COLOR_CYCLE_SPEED = 0.5;  // How fast colors cycle (degrees per frame)
 
 let lastPts = null; // Previous keypoint positions for velocity calculation
 let lastTime = 0; // Previous frame timestamp
@@ -115,19 +123,24 @@ let fluidSim = null; // Fluid simulation instance
 // Track previous keypoint positions for velocity calculation
 let prevKeypoints = {};
 
+/* ---------- Performance Optimization ---------- */
+// Skip frames for expensive operations
+let fluidUpdateCounter = 0;
+const FLUID_UPDATE_SKIP = 0; // 0 = every frame, 1 = every other frame, etc.
+
 /**
- * Fluid simulation configuration
+ * Fluid simulation configuration - optimized for performance
  * Enhancement suggestions:
  * - Make these runtime-adjustable via dat.GUI or similar
  * - Add presets for different visual styles (smoky, electric, watery)
  * - Implement auto-tuning based on device performance
  */
 const FLUID_CONFIG = {
-  SIM_RESOLUTION: 228,          // Velocity field resolution (lower = faster, less detailed)
-  DYE_RESOLUTION: 312,          // Color field resolution (higher = sharper colors)
+  SIM_RESOLUTION: 192,          // Velocity field resolution (lower = faster)
+  DYE_RESOLUTION: 256,          // Color field resolution (balanced quality/speed)
   DENSITY_DISSIPATION: 0.99,   // How fast colors fade (0.9-0.99, higher = longer trails)
   VELOCITY_DISSIPATION: 0.95,  // How fast motion dies down (0.9-0.99)
-  PRESSURE_ITERATIONS: 10,      // Accuracy of pressure solve (10-50)
+  PRESSURE_ITERATIONS: 8,       // Reduced iterations (still looks good)
   CURL: 40,                     // Vorticity confinement (swirl strength, 0-50)
   SPLAT_RADIUS: 0.15,          // Base size of fluid splats
   SPLAT_FORCE: 6000,           // Force multiplier for splats
@@ -161,11 +174,19 @@ function preload() {
  * - Add error handling for camera access denial
  */
 function setup() {
-  createCanvas(640, 480);
+  // Performance: Use 1x pixel density (disable retina/HiDPI scaling)
+  pixelDensity(1);
+
+  // Fullscreen canvas (black background with centered render area)
+  createCanvas(windowWidth, windowHeight);
   colorMode(HSB, 360, 100, 100, 100);
 
+  // Calculate centered offset for render area
+  renderOffsetX = (windowWidth - RENDER_WIDTH) / 2;
+  renderOffsetY = (windowHeight - RENDER_HEIGHT) / 2;
+
   video = createCapture(VIDEO);
-  video.size(320, 240);
+  video.size(320, 240); // Lower res for faster ML5 processing, display scales up
   video.hide();
 
   bodyPose.detectStart(video, r => poses = r);
@@ -174,13 +195,24 @@ function setup() {
   if (bodyPose.getSkeleton) connections = bodyPose.getSkeleton() || [];
   lastTime = millis();
 
-  // Initialize WebGL fluid simulation
-  const fluidInit = initFluidSimulation(width, height, FLUID_CONFIG);
+  // Initialize WebGL fluid simulation at smaller render size
+  const fluidInit = initFluidSimulation(RENDER_WIDTH, RENDER_HEIGHT, FLUID_CONFIG);
   if (fluidInit) {
     fluidCanvas = fluidInit.canvas;
     gl = fluidInit.gl;
     fluidSim = fluidInit.sim;
   }
+}
+
+/**
+ * Handle window resize - recalculate offsets (fluid stays same size)
+ */
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+
+  // Recalculate centered offset
+  renderOffsetX = (windowWidth - RENDER_WIDTH) / 2;
+  renderOffsetY = (windowHeight - RENDER_HEIGHT) / 2;
 }
 
 /**
@@ -267,7 +299,10 @@ function draw() {
     briNow = lerp(briNow, briTarget, aSB);
   }
 
-  // --- Render background (fluid or solid color with effects) ---
+  // --- Render background (fluid or simple black) ---
+  // All rendering is offset to the centered render area
+  background(0); // Black background fills entire screen
+
   if (showFluid && fluidSim) {
     // Inject fluid splats at body keypoints
     injectBodySplats(poses, dtSec);
@@ -275,32 +310,8 @@ function draw() {
     // Update fluid simulation physics
     fluidSim.update();
 
-    // Draw fluid to p5 canvas
-    background(0); // Dark background behind fluid
-    drawFluidToCanvas(fluidCanvas, drawingContext, width, height);
-  } else {
-    // Fallback: solid color background with vignette and pulsing rings
-    background(hueNow, satNow, briNow);
-
-    // Subtle vignette effect
-    noStroke();
-    const maxR = max(width, height) * 1.05;
-    for (let r = maxR; r > maxR * 0.85; r -= 8) {
-      const t = 1 - (r / maxR);
-      fill(0, 0, 0, t * 1.5);
-      ellipse(width / 2, height / 2, r, r * 0.85);
-    }
-
-    // Speed-reactive pulsing rings
-    ringPhase += spdLP2 * 8;
-    noFill();
-    strokeWeight(2);
-    for (let i = 0; i < 5; i++) {
-      const r = ((ringPhase + i * 100) % 600);
-      const alpha = map(r, 0, 600, 40, 0);
-      stroke(hueNow, satNow, briNow + 10, alpha);
-      ellipse(width / 2, height / 2, r * 2, r * 2);
-    }
+    // Draw fluid to p5 canvas (centered)
+    drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
   }
 
   // --- Render segmented person on top ---
@@ -321,16 +332,19 @@ function draw() {
 
     const masked = video.get();
     masked.mask(smoothedMask);
-    image(masked, 0, 0, width, height);
+    image(masked, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
   }
 
-  // --- Render skeleton overlay ---
+  // --- Render skeleton overlay (offset to render area) ---
   if (showSkeleton && poses && poses.length) {
+    push();
+    translate(renderOffsetX, renderOffsetY);
     const smoothed = smoothKeypoints(poses);
-    drawSkeletonAndChest(smoothed);
+    drawSkeletonAndChest(smoothed, RENDER_WIDTH, RENDER_HEIGHT);
+    pop();
   }
 
-  // --- Debug HUD ---
+  // --- Debug HUD (top-left corner, not offset) ---
   if (showDebug) {
     drawDebugHUD(tLinear);
   }
@@ -474,6 +488,8 @@ function smoothKeypoints(poses) {
 /**
  * Draws skeleton lines, keypoints, virtual chest, and facing arrow
  * @param {Array} poses - Smoothed pose data
+ * @param {number} renderW - Render area width (defaults to RENDER_WIDTH)
+ * @param {number} renderH - Render area height (defaults to RENDER_HEIGHT)
  *
  * Enhancement suggestions:
  * - Add depth visualization (3D pose if available)
@@ -481,9 +497,9 @@ function smoothKeypoints(poses) {
  * - Add gesture-specific visual effects
  * - Support custom bone coloring based on joint angles
  */
-function drawSkeletonAndChest(poses) {
-  const sX = width / video.width;
-  const sY = height / video.height;
+function drawSkeletonAndChest(poses, renderW = RENDER_WIDTH, renderH = RENDER_HEIGHT) {
+  const sX = renderW / video.width;
+  const sY = renderH / video.height;
 
   stroke(255, 0, 0);
   strokeWeight(2);
@@ -571,22 +587,41 @@ function injectBodySplats(posesArr, dtSec) {
   const pose = posesArr[0];
   if (!pose.keypoints) return;
 
-  const sX = width / video.width;
-  const sY = height / video.height;
+  // Use render dimensions for fluid simulation
+  const sX = RENDER_WIDTH / video.width;
+  const sY = RENDER_HEIGHT / video.height;
 
-  // Define which keypoints create splats and their properties
+  // Update color cycling offset
+  colorCycleOffset = (colorCycleOffset + COLOR_CYCLE_SPEED) % 360;
+
+  // Color palette (hex to RGB normalized 0-1):
+  // #020617 - near-black navy (background, not for splats)
+  // #0B1F3B - deep blue: r=0.043, g=0.122, b=0.231
+  // #0F4C81 - classic fluid-sim blue: r=0.059, g=0.298, b=0.506
+  // #1FA4B6 - cyan/teal highlight: r=0.122, g=0.643, b=0.714
+  // #E5FBFF - almost-white (strongest flow): r=0.898, g=0.984, b=1.0
+  const PALETTE = {
+    deepBlue: { r: 0.043, g: 0.122, b: 0.231 },
+    fluidBlue: { r: 0.059, g: 0.298, b: 0.506 },
+    cyanTeal: { r: 0.122, g: 0.643, b: 0.714 },
+    brightWhite: { r: 0.898, g: 0.984, b: 1.0 }
+  };
+
+  // Define which keypoints create splats with palette colors
+  // Hands get brightest colors, body gets deeper blues
   const splatPoints = [
-    { name: 'left_wrist', radius: 1.0, force: 1.0 },   // Hands: strongest effect
-    { name: 'right_wrist', radius: 1.0, force: 1.0 },
-    { name: 'left_elbow', radius: 0.7, force: 0.6 },   // Elbows: medium effect
-    { name: 'right_elbow', radius: 0.7, force: 0.6 },
-    { name: 'nose', radius: 0.5, force: 0.4 },         // Head: subtle effect
-    { name: 'left_shoulder', radius: 0.5, force: 0.3 }, // Shoulders: minimal
-    { name: 'right_shoulder', radius: 0.5, force: 0.3 }
+    { name: 'left_wrist', radius: 1.0, force: 1.0, color: 'brightWhite' },   // Hands: brightest
+    { name: 'right_wrist', radius: 1.0, force: 1.0, color: 'brightWhite' },  // Hands: brightest
+    { name: 'left_elbow', radius: 0.7, force: 0.6, color: 'cyanTeal' },      // Elbows: cyan/teal
+    { name: 'right_elbow', radius: 0.7, force: 0.6, color: 'cyanTeal' },     // Elbows: cyan/teal
+    { name: 'nose', radius: 0.5, force: 0.4, color: 'cyanTeal' },            // Head: cyan/teal
+    { name: 'left_shoulder', radius: 0.5, force: 0.3, color: 'fluidBlue' },  // Shoulders: fluid blue
+    { name: 'right_shoulder', radius: 0.5, force: 0.3, color: 'fluidBlue' }, // Shoulders: fluid blue
+    { name: 'left_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },      // Knees: fluid blue
+    { name: 'right_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },     // Knees: fluid blue
+    { name: 'left_hip', radius: 0.4, force: 0.3, color: 'deepBlue' },        // Hips: deep blue
+    { name: 'right_hip', radius: 0.4, force: 0.3, color: 'deepBlue' }        // Hips: deep blue
   ];
-
-  // Get current color based on movement speed
-  const rgb = hsbToRgb(hueNow, satNow, briNow);
 
   for (const pt of splatPoints) {
     const kp = getKP(pose, pt.name);
@@ -606,9 +641,20 @@ function injectBodySplats(posesArr, dtSec) {
     // Only inject splat if there's significant movement
     const speed = Math.sqrt(dx * dx + dy * dy);
     if (speed > 5) {
-      // Normalize coordinates for WebGL (0-1 range)
-      const normX = x / width;
-      const normY = y / height;
+      // Normalize coordinates for WebGL (0-1 range) using render dimensions
+      const normX = x / RENDER_WIDTH;
+      const normY = y / RENDER_HEIGHT;
+
+      // Get color from palette for this body part
+      const baseColor = PALETTE[pt.color];
+
+      // Apply color cycling by rotating through palette with subtle hue shift
+      const cycleT = colorCycleOffset / 360;
+      const rgb = {
+        r: baseColor.r + Math.sin(cycleT * Math.PI * 2) * 0.15,
+        g: baseColor.g + Math.sin(cycleT * Math.PI * 2 + 2) * 0.15,
+        b: baseColor.b + Math.sin(cycleT * Math.PI * 2 + 4) * 0.15
+      };
 
       // Scale force by speed and point importance
       const forceMult = Math.min(speed / 100, 3) * pt.force * (1 + spdLP2 * 2);
@@ -619,7 +665,7 @@ function injectBodySplats(posesArr, dtSec) {
         normY,
         dx,
         dy,
-        { r: rgb.r * 0.8, g: rgb.g * 0.8, b: rgb.b * 0.8 },
+        rgb,
         FLUID_CONFIG.SPLAT_RADIUS * pt.radius,
         forceMult * 0.5
       );
@@ -681,9 +727,9 @@ function measureBodyVelocity(posesArr, dtSec) {
   }
   lastPts = curr;
 
-  // Convert to normalized velocity
+  // Convert to normalized velocity using render dimensions
   const pixPerSec = disp / max(0.001, dtSec);
-  const diag = Math.hypot(width, height);
+  const diag = Math.hypot(RENDER_WIDTH, RENDER_HEIGHT);
   return pixPerSec / (diag * 2.0);
 }
 
