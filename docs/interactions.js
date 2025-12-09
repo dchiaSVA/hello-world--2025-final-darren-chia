@@ -123,13 +123,13 @@ let prevKeypoints = {};
  * - Implement auto-tuning based on device performance
  */
 const FLUID_CONFIG = {
-  SIM_RESOLUTION: 128,          // Velocity field resolution (lower = faster, less detailed)
-  DYE_RESOLUTION: 512,          // Color field resolution (higher = sharper colors)
-  DENSITY_DISSIPATION: 0.97,   // How fast colors fade (0.9-0.99, higher = longer trails)
-  VELOCITY_DISSIPATION: 0.98,  // How fast motion dies down (0.9-0.99)
-  PRESSURE_ITERATIONS: 20,      // Accuracy of pressure solve (10-50)
-  CURL: 30,                     // Vorticity confinement (swirl strength, 0-50)
-  SPLAT_RADIUS: 0.25,          // Base size of fluid splats
+  SIM_RESOLUTION: 228,          // Velocity field resolution (lower = faster, less detailed)
+  DYE_RESOLUTION: 312,          // Color field resolution (higher = sharper colors)
+  DENSITY_DISSIPATION: 0.99,   // How fast colors fade (0.9-0.99, higher = longer trails)
+  VELOCITY_DISSIPATION: 0.95,  // How fast motion dies down (0.9-0.99)
+  PRESSURE_ITERATIONS: 10,      // Accuracy of pressure solve (10-50)
+  CURL: 40,                     // Vorticity confinement (swirl strength, 0-50)
+  SPLAT_RADIUS: 0.15,          // Base size of fluid splats
   SPLAT_FORCE: 6000,           // Force multiplier for splats
   COLOR_UPDATE_SPEED: 10       // Unused - reserved for future color animation
 };
