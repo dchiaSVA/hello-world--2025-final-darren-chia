@@ -1,0 +1,43 @@
+<!--
+  Body-Driven Interactive Visual Experience - MediaPipe Version
+  Uses Google MediaPipe for faster, more accurate pose detection
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Body-Driven Fluid Simulation (MediaPipe)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.10/p5.min.js"></script>
+    <!-- MediaPipe dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js" crossorigin="anonymous"></script>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+      }
+      /* Hide the video element used by MediaPipe */
+      #mediapipe-video {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Hidden video element for MediaPipe camera input -->
+    <video id="mediapipe-video" playsinline></video>
+    <!-- Load fluid simulation module first (provides global functions) -->
+    <script src="fluid-simulation.js"></script>
+    <!-- Then load main interactions script (MediaPipe version) -->
+    <script src="interactions_mediapipe.js"></script>
+  </body>
+</html>
