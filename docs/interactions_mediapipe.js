@@ -69,11 +69,18 @@ const LANDMARK_NAMES = {
 /* ---------- Visual Configuration ---------- */
 const SHOW_MASKED_VIDEO = true; // Whether to show segmented video (using MediaPipe Pose built-in segmentation)
 
-// Internal rendering resolution (smaller for performance, centered on screen)
-const RENDER_WIDTH = 960;
-const RENDER_HEIGHT = 720;
+// Internal rendering resolution (higher for better quality)
+const RENDER_WIDTH = 1280;  // Increased from 960
+const RENDER_HEIGHT = 960;  // Increased from 720
 let renderOffsetX = 0;  // Calculated in setup
 let renderOffsetY = 0;
+
+/* ---------- Edge Glow Configuration ---------- */
+const EDGE_GLOW_ENABLED = true;   // Enable/disable edge glow effect
+const EDGE_GLOW_ONLY = false;      // If true, only show glow (no video inside)
+const EDGE_GLOW_BLUR = 60;        // Blur radius for glow (higher = softer glow)
+const EDGE_GLOW_COLOR = '#ff0000'; // Bright red glow color (change to any hex color)
+const EDGE_GLOW_INTENSITY = 1.0;  // Glow opacity (0-1)
 
 /* ---------- Color Palette (Yellow → Red) ---------- */
 const RED_HUE   = 5;    // Fast movement hue (deep red)
@@ -120,6 +127,7 @@ let kalmanFilters = [];
 const MASK_SES_ALPHA = 0.3; // 0.3-0.5 recommended, higher = more responsive
 let smoothedMask = null;
 let maskGraphics = null; // Off-screen graphics for mask processing
+let glowCanvas = null; // Reusable canvas for glow effect
 
 /* ---------- WebGL Fluid Simulation ---------- */
 let fluidCanvas, gl; // Fluid canvas and WebGL context
@@ -127,6 +135,55 @@ let fluidSim = null; // Fluid simulation instance
 
 // Track previous keypoint positions for velocity calculation
 let prevKeypoints = {};
+
+// Debug: track z-coordinate range
+let minZ = Infinity, maxZ = -Infinity, avgZ = 0;
+
+/* ---------- WebGL Shader for Video Masking ---------- */
+let maskShader = null; // p5 shader object
+let shaderGraphics = null; // WebGL graphics buffer for shader rendering
+
+// Vertex shader - passes texture coordinates to fragment shader
+const vertexShaderCode = `
+attribute vec3 aPosition;
+attribute vec2 aTexCoord;
+varying vec2 vTexCoord;
+
+void main() {
+  vTexCoord = aTexCoord;
+  vec4 positionVec4 = vec4(aPosition, 1.0);
+  positionVec4.xy = positionVec4.xy * 2.0 - 1.0;
+  gl_Position = positionVec4;
+}
+`;
+
+// Fragment shader - applies mask to video
+const fragmentShaderCode = `
+precision mediump float;
+
+varying vec2 vTexCoord;
+uniform sampler2D uVideoTexture;  // The video feed
+uniform sampler2D uMaskTexture;   // The segmentation mask
+uniform bool uMirror;              // Whether to mirror horizontally
+
+void main() {
+  // Mirror texture coordinates if needed
+  vec2 texCoord = vTexCoord;
+  if (uMirror) {
+    texCoord.x = 1.0 - texCoord.x;
+  }
+
+  // Sample video and mask
+  vec4 videoColor = texture2D(uVideoTexture, texCoord);
+  vec4 maskColor = texture2D(uMaskTexture, texCoord);
+
+  // Use mask's red channel as alpha (MediaPipe stores mask in R channel)
+  float alpha = maskColor.r;
+
+  // Apply mask as alpha
+  gl_FragColor = vec4(videoColor.rgb, alpha);
+}
+`;
 
 /* ---------- Performance Optimization ---------- */
 let fluidUpdateCounter = 0;
@@ -136,13 +193,13 @@ const FLUID_UPDATE_SKIP = 0; // 0 = every frame, 1 = every other frame, etc.
  * Fluid simulation configuration - optimized for performance
  */
 const FLUID_CONFIG = {
-  SIM_RESOLUTION: 192,          // Velocity field resolution (lower = faster)
-  DYE_RESOLUTION: 256,          // Color field resolution (balanced quality/speed)
+  SIM_RESOLUTION: 92,          // Velocity field resolution (lower = faster)
+  DYE_RESOLUTION: 356,          // Color field resolution (balanced quality/speed)
   DENSITY_DISSIPATION: 0.99,   // How fast colors fade (0.9-0.99, higher = longer trails)
-  VELOCITY_DISSIPATION: 0.95,  // How fast motion dies down (0.9-0.99)
+  VELOCITY_DISSIPATION: 0.96,  // How fast motion dies down (0.9-0.99)
   PRESSURE_ITERATIONS: 8,       // Reduced iterations (still looks good)
   CURL: 40,                     // Vorticity confinement (swirl strength, 0-50)
-  SPLAT_RADIUS: 0.15,          // Base size of fluid splats
+  SPLAT_RADIUS: 0.10,          // Base size of fluid splats
   SPLAT_FORCE: 6000,           // Force multiplier for splats
   COLOR_UPDATE_SPEED: 10       // Unused - reserved for future color animation
 };
@@ -177,6 +234,18 @@ function setup() {
 
   // Create off-screen graphics for mask processing
   maskGraphics = createGraphics(RENDER_WIDTH, RENDER_HEIGHT);
+
+  // Create reusable canvas for glow effect
+  glowCanvas = document.createElement('canvas');
+  glowCanvas.width = RENDER_WIDTH;
+  glowCanvas.height = RENDER_HEIGHT;
+
+  // Create WebGL graphics buffer for shader-based masking
+  shaderGraphics = createGraphics(RENDER_WIDTH, RENDER_HEIGHT, WEBGL);
+
+  // Create shader from source code
+  maskShader = shaderGraphics.createShader(vertexShaderCode, fragmentShaderCode);
+  console.log('WebGL masking shader initialized');
 
   // Get video element from HTML
   videoElement = document.getElementById('mediapipe-video');
@@ -223,8 +292,8 @@ function setup() {
           console.error('Error in camera frame callback:', err);
         }
       },
-      width: 640,   // Higher resolution than ml5 version (was 320x240)
-      height: 480
+      width: 1280,   // Increased resolution for sharper video
+      height: 960
     });
 
     mpCamera.start().then(() => {
@@ -422,7 +491,7 @@ function draw() {
 
 /**
  * Draw the segmented video (person isolated from background)
- * Uses off-screen canvas with composite operations for better performance
+ * Uses off-screen canvas with composite operations + edge glow effect
  */
 function drawSegmentedVideo() {
   if (!videoElement || !segmentationMask || videoElement.videoWidth === 0) return;
@@ -434,7 +503,11 @@ function drawSegmentedVideo() {
     // Get the context of the off-screen buffer
     const ctx = maskGraphics.drawingContext;
 
-    // Draw mirrored video first
+    // --- MASKED VIDEO (draw first) ---
+    ctx.globalAlpha = 1.0;
+    ctx.shadowBlur = 0;
+
+    // Draw mirrored video
     ctx.save();
     ctx.scale(-1, 1);
     ctx.translate(-RENDER_WIDTH, 0);
@@ -453,6 +526,44 @@ function drawSegmentedVideo() {
 
     // Reset composite operation
     ctx.globalCompositeOperation = 'source-over';
+
+    // --- EDGE GLOW EFFECT (draw BEHIND the masked video) ---
+    if (EDGE_GLOW_ENABLED && glowCanvas) {
+      const glowCtx = glowCanvas.getContext('2d');
+
+      // Clear and prepare glow canvas
+      glowCtx.clearRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.globalCompositeOperation = 'source-over';
+
+      // Draw the mask to the glow canvas (mirrored)
+      glowCtx.save();
+      glowCtx.scale(-1, 1);
+      glowCtx.translate(-RENDER_WIDTH, 0);
+      glowCtx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.restore();
+
+      // Fill it with the glow color
+      glowCtx.globalCompositeOperation = 'source-in';
+      glowCtx.fillStyle = EDGE_GLOW_COLOR;
+      glowCtx.fillRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.globalCompositeOperation = 'source-over';
+
+      // Now draw this colored mask multiple times with blur BEHIND the video
+      // Reduced from 20 to 8 layers for better performance
+      ctx.globalCompositeOperation = 'destination-over';
+      for (let i = 0; i < 8; i++) {
+        const blurAmount = EDGE_GLOW_BLUR * (i + 1) / 8;
+        const layerAlpha = EDGE_GLOW_INTENSITY * 0.2;
+
+        ctx.save();
+        ctx.globalAlpha = layerAlpha;
+        ctx.filter = `blur(${blurAmount}px)`;
+        ctx.drawImage(glowCanvas, 0, 0);
+        ctx.restore();
+      }
+
+      ctx.globalCompositeOperation = 'source-over';
+    }
 
     // Draw the masked result to the main canvas
     image(maskGraphics, renderOffsetX, renderOffsetY);
@@ -714,36 +825,65 @@ function injectBodySplats(posesArr, dtSec) {
     { name: 'left_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },
     { name: 'right_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },
     { name: 'left_hip', radius: 0.4, force: 0.3, color: 'deepBlue' },
-    { name: 'right_hip', radius: 0.4, force: 0.3, color: 'deepBlue' }
+    { name: 'right_hip', radius: 0.4, force: 0.3, color: 'deepBlue' },
+    { name: 'left_ankle', radius: 0.5, force: 0.4, color: 'deepBlue' },
+    { name: 'right_ankle', radius: 0.5, force: 0.4, color: 'deepBlue' }
   ];
 
-  for (const pt of splatPoints) {
-    const kp = getKP(pose, pt.name);
-    if (!kp) continue;
+  // Add intermediate points along body connections for fuller coverage
+  const bodyConnections = [
+    ['left_shoulder', 'right_shoulder'],   // Across shoulders
+    ['left_shoulder', 'left_hip'],         // Left torso
+    ['right_shoulder', 'right_hip'],       // Right torso
+    ['left_hip', 'right_hip'],             // Across hips
+    ['left_hip', 'left_knee'],             // Left thigh
+    ['right_hip', 'right_knee'],           // Right thigh
+    ['left_knee', 'left_ankle'],           // Left shin
+    ['right_knee', 'right_ankle']          // Right shin
+  ];
 
-    // Mirror x-coordinate for display consistency
+  // Helper function to create a splat at a given point
+  const createSplatAtPoint = (kp, pt, prevPos) => {
+    if (!kp) return;
+
     const x = (videoElement.videoWidth - kp.x) * sX;
     const y = kp.y * sY;
+    const z = kp.z || 0;
 
-    // Calculate velocity from previous frame
-    let dx = 0, dy = 0;
-    if (prevKeypoints[pt.name]) {
-      dx = (x - prevKeypoints[pt.name].x) / Math.max(0.016, dtSec);
-      dy = (y - prevKeypoints[pt.name].y) / Math.max(0.016, dtSec);
+    // Debug: track z-coordinate range
+    if (pt.name === 'nose') {
+      minZ = Math.min(minZ, z);
+      maxZ = Math.max(maxZ, z);
+      avgZ = avgZ * 0.95 + z * 0.05;
     }
-    prevKeypoints[pt.name] = { x, y };
 
-    // Only inject splat if there's significant movement
-    const speed = Math.sqrt(dx * dx + dy * dy);
-    if (speed > 5) {
-      // Normalize coordinates for WebGL (0-1 range) using render dimensions
+    // Calculate raw velocity
+    let dx = 0, dy = 0, dz = 0;
+    if (prevPos) {
+      dx = (x - prevPos.x) / Math.max(0.016, dtSec);
+      dy = (y - prevPos.y) / Math.max(0.016, dtSec);
+      dz = (z - prevPos.z) / Math.max(0.016, dtSec);
+    }
+
+    // Depth scaling for size: far = smaller splats, close = bigger splats
+    const sizeMult = map(z, 0.2, 0.6, 0.5, 2.0);
+    const clampedSizeMult = constrain(sizeMult, 0.5, 2.0);
+
+    // Velocity damping based on depth: far = reduce velocity, close = keep velocity
+    // When far away, perspective makes movements look bigger, so we dampen them
+    const velocityDamping = map(z, 0.2, 0.6, 0.3, 1.0); // Far=dampen more, Close=dampen less
+    const normalizedDx = dx * velocityDamping;
+    const normalizedDy = dy * velocityDamping;
+
+    const speed2D = Math.sqrt(normalizedDx * normalizedDx + normalizedDy * normalizedDy);
+    const depthSpeed = Math.abs(dz) * 1000;
+    const speed3D = Math.sqrt(normalizedDx * normalizedDx + normalizedDy * normalizedDy + dz * dz * 10000);
+
+    if (speed2D > 2 || depthSpeed > 0.1) {
       const normX = x / RENDER_WIDTH;
       const normY = y / RENDER_HEIGHT;
 
-      // Get color from palette for this body part
       const baseColor = PALETTE[pt.color];
-
-      // Apply color cycling by rotating through palette with subtle hue shift
       const cycleT = colorCycleOffset / 360;
       const rgb = {
         r: baseColor.r + Math.sin(cycleT * Math.PI * 2) * 0.15,
@@ -751,19 +891,49 @@ function injectBodySplats(posesArr, dtSec) {
         b: baseColor.b + Math.sin(cycleT * Math.PI * 2 + 4) * 0.15
       };
 
-      // Scale force by speed and point importance
-      const forceMult = Math.min(speed / 100, 3) * pt.force * (1 + spdLP2 * 2);
+      const forceMult = Math.min(speed3D / 100, 3) * pt.force * (1 + spdLP2 * 2) * clampedSizeMult;
+      const radiusMult = FLUID_CONFIG.SPLAT_RADIUS * pt.radius * clampedSizeMult;
 
-      injectSplat(
-        fluidSim,
-        normX,
-        normY,
-        dx,
-        dy,
-        rgb,
-        FLUID_CONFIG.SPLAT_RADIUS * pt.radius,
-        forceMult * 0.5
-      );
+      // Use normalized velocities for fluid direction
+      injectSplat(fluidSim, normX, normY, normalizedDx, normalizedDy, rgb, radiusMult, forceMult * 0.5);
+    }
+
+    return { x, y, z };
+  };
+
+  // Process main keypoints
+  for (const pt of splatPoints) {
+    const kp = getKP(pose, pt.name);
+    const newPos = createSplatAtPoint(kp, pt, prevKeypoints[pt.name]);
+    if (newPos) prevKeypoints[pt.name] = newPos;
+  }
+
+  // Process intermediate points along body connections for fuller torso/leg coverage
+  for (const [startName, endName] of bodyConnections) {
+    const startKp = getKP(pose, startName);
+    const endKp = getKP(pose, endName);
+
+    if (!startKp || !endKp) continue;
+
+    // Create 3 intermediate points between each connection
+    for (let i = 1; i <= 3; i++) {
+      const t = i / 4; // 0.25, 0.5, 0.75
+      const interpKp = {
+        x: startKp.x * (1 - t) + endKp.x * t,
+        y: startKp.y * (1 - t) + endKp.y * t,
+        z: (startKp.z || 0) * (1 - t) + (endKp.z || 0) * t,
+        confidence: Math.min(startKp.confidence, endKp.confidence)
+      };
+
+      const interpPt = {
+        name: `${startName}_${endName}_${i}`,
+        radius: 0.8,
+        force: 0.5,
+        color: 'fluidBlue'
+      };
+
+      const newPos = createSplatAtPoint(interpKp, interpPt, prevKeypoints[interpPt.name]);
+      if (newPos) prevKeypoints[interpPt.name] = newPos;
     }
   }
 }
@@ -833,7 +1003,7 @@ function measureBodyVelocity(posesArr, dtSec) {
 function drawDebugHUD(tLinear) {
   noStroke();
   fill(0, 0, 0, 65);
-  rect(10, 10, 600, 140, 8);
+  rect(10, 10, 600, 160, 8);
   fill(0, 0, 100);
   textSize(12);
   text(`FPS: ${fps}  [MediaPipe Version]`, 20, 30);
@@ -842,9 +1012,12 @@ function drawDebugHUD(tLinear) {
   text(`[D] HUD  [S] skeleton  [F] fluid:${showFluid}  gain:${SPEED_GAIN}  deadzone:${MOTION_DEADZONE}`, 20, 78);
   text(`Video: ${videoReady ? 'Ready' : 'Loading...'}  Poses: ${poses.length}`, 20, 94);
   text(`Segmentation: ${segmentationMask ? 'Active' : 'None'}  Fluid: ${fluidSim ? 'Active' : 'None'}`, 20, 110);
+  // Calculate what the multiplier would be at current average depth
+  const currentMult = constrain(map(avgZ, 0.2, 0.6, 0.5, 2.0), 0.5, 2.0);
+  text(`Z-depth: min=${minZ.toFixed(3)}  max=${maxZ.toFixed(3)}  avg=${avgZ.toFixed(3)}  mult=${currentMult.toFixed(2)}x`, 20, 126);
   if (!videoReady) {
     fill(100, 100, 100);
-    text('Waiting for camera... Check browser console (F12) for errors', 20, 126);
+    text('Waiting for camera... Check browser console (F12) for errors', 20, 142);
   }
 }
 
