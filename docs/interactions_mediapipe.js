@@ -14,6 +14,7 @@
  * - Virtual chest point and facing direction indicator
  * - Depth-aware occlusion (fluid flows behind body)
  * - Boundary forces (inward push from edges for containment)
+ * - Hand tracking with detailed finger landmarks (21 points per hand)
  *
  * Controls:
  * - [D] Toggle debug HUD
@@ -21,10 +22,13 @@
  * - [F] Toggle fluid simulation
  * - [O] Toggle occlusion effect
  * - [B] Toggle boundary forces
+ * - [H] Toggle hand tracking
+ * - [W] Toggle flow field
  *
  * Dependencies:
  * - p5.js (canvas rendering)
  * - MediaPipe Pose (pose detection)
+ * - MediaPipe Hands (hand tracking)
  * - MediaPipe SelfieSegmentation (body segmentation)
  * - fluid-simulation.js (WebGL fluid dynamics module - must be loaded first)
  *
@@ -37,8 +41,9 @@
 
 // Video and MediaPipe models
 let videoElement;
-let mpPose, mpSegmentation, mpCamera;
+let mpPose, mpHands, mpSegmentation, mpCamera;
 let poses = [];
+let handResults = null;  // MediaPipe Hands results
 let segmentationMask = null;
 let videoReady = false;
 
@@ -70,6 +75,20 @@ const LANDMARK_NAMES = {
   28: 'right_ankle'
 };
 
+// MediaPipe Hand landmark names (21 per hand)
+const HAND_LANDMARK_NAMES = [
+  'wrist',
+  'thumb_cmc', 'thumb_mcp', 'thumb_ip', 'thumb_tip',
+  'index_mcp', 'index_pip', 'index_dip', 'index_tip',
+  'middle_mcp', 'middle_pip', 'middle_dip', 'middle_tip',
+  'ring_mcp', 'ring_pip', 'ring_dip', 'ring_tip',
+  'pinky_mcp', 'pinky_pip', 'pinky_dip', 'pinky_tip'
+];
+
+// Hand tracking state
+let prevHandPositions = { left: {}, right: {} };
+let HAND_TRACKING_ENABLED = true;
+
 /* ---------- Visual Configuration ---------- */
 const SHOW_MASKED_VIDEO = true; // Whether to show segmented video (using MediaPipe Pose built-in segmentation)
 
@@ -95,6 +114,14 @@ let BOUNDARY_FORCES_ENABLED = true;  // Enable inward boundary forces
 const BOUNDARY_FORCE_STRENGTH = 80;  // Strength of boundary push (0-200)
 const BOUNDARY_FORCE_WIDTH = 0.15;   // Width of boundary zone (0-0.5, as fraction of canvas)
 const BOUNDARY_FORCE_SAMPLES = 12;   // Number of force injection points per edge
+
+/* ---------- Flow Field Configuration ---------- */
+let FLOW_FIELD_ENABLED = true;       // Enable ambient flow field
+const FLOW_FIELD_STRENGTH = 25;      // Force of flow field (0-100)
+const FLOW_FIELD_SCALE = 0.003;      // Noise scale (lower = larger patterns)
+const FLOW_FIELD_SPEED = 0.02;       // Animation speed (noise offset increment)
+const FLOW_FIELD_GRID_SIZE = 16;     // Grid resolution (lower = fewer injection points)
+let flowFieldTime = 0;               // Time offset for animated noise
 
 /* ---------- Color Palette (Yellow → Red) ---------- */
 const RED_HUE   = 5;    // Fast movement hue (deep red)
@@ -212,7 +239,7 @@ const FLUID_CONFIG = {
   DENSITY_DISSIPATION: 0.99,   // How fast colors fade (0.9-0.99, higher = longer trails)
   VELOCITY_DISSIPATION: 0.96,  // How fast motion dies down (0.9-0.99)
   PRESSURE_ITERATIONS: 8,       // Reduced iterations (still looks good)
-  CURL: 40,                     // Vorticity confinement (swirl strength, 0-50)
+  CURL: 65,                     // Vorticity confinement (INCREASED for dramatic swirls)
   SPLAT_RADIUS: 0.10,          // Base size of fluid splats
   SPLAT_FORCE: 6000,           // Force multiplier for splats
   COLOR_UPDATE_SPEED: 10       // Unused - reserved for future color animation
@@ -289,8 +316,23 @@ function setup() {
     mpPose.onResults(onPoseResults);
     console.log('MediaPipe Pose initialized');
 
-    // Note: We're using Pose's built-in segmentation (Option 1)
-    // No need for separate SelfieSegmentation model
+    // Initialize MediaPipe Hands for detailed finger tracking
+    console.log('Initializing MediaPipe Hands...');
+    mpHands = new Hands({
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+      }
+    });
+
+    mpHands.setOptions({
+      maxNumHands: 2,              // Track both hands
+      modelComplexity: 1,          // 0=lite, 1=full (accuracy vs speed)
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    mpHands.onResults(onHandResults);
+    console.log('MediaPipe Hands initialized');
 
     // Initialize camera using MediaPipe Camera Utils
     console.log('Starting camera...');
@@ -302,8 +344,11 @@ function setup() {
               console.log('Video ready! Starting detection...');
               videoReady = true;
             }
-            // Only send to Pose (which now includes segmentation)
+            // Send to both Pose and Hands models
             await mpPose.send({ image: videoElement });
+            if (HAND_TRACKING_ENABLED) {
+              await mpHands.send({ image: videoElement });
+            }
           }
         } catch (err) {
           console.error('Error in camera frame callback:', err);
@@ -372,6 +417,17 @@ function onPoseResults(results) {
 }
 
 /**
+ * Handle MediaPipe hand detection results
+ */
+function onHandResults(results) {
+  try {
+    handResults = results;
+  } catch (err) {
+    console.error('Error in onHandResults:', err);
+  }
+}
+
+/**
  * Handle MediaPipe segmentation results
  */
 function onSegmentationResults(results) {
@@ -404,6 +460,8 @@ function keyPressed() {
   if (key === 'f' || key === 'F') showFluid = !showFluid;
   if (key === 'o' || key === 'O') OCCLUSION_ENABLED = !OCCLUSION_ENABLED;
   if (key === 'b' || key === 'B') BOUNDARY_FORCES_ENABLED = !BOUNDARY_FORCES_ENABLED;
+  if (key === 'w' || key === 'W') FLOW_FIELD_ENABLED = !FLOW_FIELD_ENABLED;
+  if (key === 'h' || key === 'H') HAND_TRACKING_ENABLED = !HAND_TRACKING_ENABLED;
 }
 
 /**
@@ -480,6 +538,9 @@ function draw() {
   if (showFluid && fluidSim) {
     // Inject fluid splats at body keypoints
     injectBodySplats(poses, dtSec);
+
+    // Inject fluid splats at hand landmarks (detailed finger tracking)
+    injectHandSplats(dtSec);
 
     // Update fluid simulation physics
     fluidSim.update();
@@ -1029,6 +1090,97 @@ function injectBodySplats(posesArr, dtSec) {
 }
 
 /**
+ * Injects fluid splats at hand landmarks based on finger movement
+ * Provides detailed finger tracking for more responsive hand interaction
+ * @param {number} dtSec - Delta time in seconds
+ */
+function injectHandSplats(dtSec) {
+  if (!handResults || !handResults.multiHandLandmarks || !fluidSim || !videoReady || !HAND_TRACKING_ENABLED) return;
+
+  // Bright colors for fingertips - more visible than body splats
+  const FINGER_COLORS = {
+    thumb: { r: 1.0, g: 0.9, b: 0.3 },    // Yellow
+    index: { r: 1.0, g: 0.4, b: 0.2 },    // Orange-red
+    middle: { r: 0.9, g: 0.2, b: 0.5 },   // Pink
+    ring: { r: 0.5, g: 0.3, b: 1.0 },     // Purple
+    pinky: { r: 0.2, g: 0.8, b: 1.0 }     // Cyan
+  };
+
+  // Define which landmarks to track with their properties
+  const handSplatPoints = [
+    { index: 4, name: 'thumb_tip', radius: 0.8, force: 1.2, finger: 'thumb' },
+    { index: 8, name: 'index_tip', radius: 1.0, force: 1.5, finger: 'index' },
+    { index: 12, name: 'middle_tip', radius: 0.9, force: 1.3, finger: 'middle' },
+    { index: 16, name: 'ring_tip', radius: 0.8, force: 1.1, finger: 'ring' },
+    { index: 20, name: 'pinky_tip', radius: 0.7, force: 1.0, finger: 'pinky' },
+    { index: 0, name: 'wrist', radius: 0.6, force: 0.8, finger: 'index' },
+    // Add knuckles for more coverage
+    { index: 5, name: 'index_mcp', radius: 0.5, force: 0.6, finger: 'index' },
+    { index: 9, name: 'middle_mcp', radius: 0.5, force: 0.6, finger: 'middle' },
+    { index: 13, name: 'ring_mcp', radius: 0.5, force: 0.6, finger: 'ring' },
+    { index: 17, name: 'pinky_mcp', radius: 0.5, force: 0.6, finger: 'pinky' }
+  ];
+
+  // Process each detected hand
+  handResults.multiHandLandmarks.forEach((landmarks, handIndex) => {
+    const handedness = handResults.multiHandedness[handIndex]?.label || 'Unknown';
+    const handKey = handedness.toLowerCase(); // 'left' or 'right'
+
+    // Ensure hand position storage exists
+    if (!prevHandPositions[handKey]) {
+      prevHandPositions[handKey] = {};
+    }
+
+    for (const pt of handSplatPoints) {
+      const landmark = landmarks[pt.index];
+      if (!landmark) continue;
+
+      // MediaPipe hands uses normalized coordinates (0-1)
+      // Mirror x coordinate and scale to render dimensions
+      const x = (1 - landmark.x) * RENDER_WIDTH;
+      const y = landmark.y * RENDER_HEIGHT;
+      const z = landmark.z || 0;
+
+      const prevPos = prevHandPositions[handKey][pt.name];
+
+      // Calculate velocity
+      let dx = 0, dy = 0;
+      if (prevPos) {
+        dx = (x - prevPos.x) / Math.max(0.016, dtSec);
+        dy = (y - prevPos.y) / Math.max(0.016, dtSec);
+      }
+
+      // Store current position for next frame
+      prevHandPositions[handKey][pt.name] = { x, y, z };
+
+      // Calculate speed
+      const speed2D = Math.sqrt(dx * dx + dy * dy);
+
+      // Only inject splats when there's movement
+      if (speed2D > 5) {
+        // Normalized position for fluid (0-1)
+        const normX = x / RENDER_WIDTH;
+        const normY = y / RENDER_HEIGHT;
+
+        // Normalize velocity (divide by canvas size for proper fluid dynamics)
+        const normalizedDx = dx / RENDER_WIDTH;
+        const normalizedDy = dy / RENDER_HEIGHT;
+
+        // Get color based on finger
+        const rgb = FINGER_COLORS[pt.finger];
+
+        // Force multiplier based on speed
+        const forceMult = Math.min(speed2D / 50, 4) * pt.force;
+        const radiusMult = FLUID_CONFIG.SPLAT_RADIUS * pt.radius;
+
+        // Inject splat at finger position
+        injectSplat(fluidSim, normX, normY, normalizedDx, normalizedDy, rgb, radiusMult, forceMult);
+      }
+    }
+  });
+}
+
+/**
  * Injects boundary forces that push fluid inward from the edges
  * Creates a "containment field" that keeps fluid centered
  */
@@ -1080,6 +1232,54 @@ function injectBoundaryForces() {
     const dx = 0;
     const dy = -strength; // Push up
     injectSplat(fluidSim, x, y, dx, dy, boundaryColor, FLUID_CONFIG.SPLAT_RADIUS * 0.3, 1.0);
+  }
+}
+
+/**
+ * Injects ambient flow field using Perlin noise
+ * Creates organic, swirling patterns across the entire canvas
+ */
+function injectFlowField() {
+  if (!fluidSim || !FLOW_FIELD_ENABLED) return;
+
+  // Increment time for animated noise
+  flowFieldTime += FLOW_FIELD_SPEED;
+
+  const gridSize = FLOW_FIELD_GRID_SIZE;
+  const cellsX = Math.floor(RENDER_WIDTH / gridSize);
+  const cellsY = Math.floor(RENDER_HEIGHT / gridSize);
+
+  // Very subtle purple/blue tint for flow field
+  const flowColor = { r: 0.02, g: 0.05, b: 0.12 };
+
+  // Inject forces at grid points across the canvas
+  for (let i = 0; i < cellsX; i++) {
+    for (let j = 0; j < cellsY; j++) {
+      // Normalized position (0-1)
+      const normX = (i + 0.5) / cellsX;
+      const normY = (j + 0.5) / cellsY;
+
+      // Generate Perlin noise angle (0-2π)
+      const px = normX * RENDER_WIDTH;
+      const py = normY * RENDER_HEIGHT;
+      const angle = noise(px * FLOW_FIELD_SCALE, py * FLOW_FIELD_SCALE, flowFieldTime) * Math.PI * 2;
+
+      // Convert angle to velocity vector
+      const dx = Math.cos(angle) * FLOW_FIELD_STRENGTH;
+      const dy = Math.sin(angle) * FLOW_FIELD_STRENGTH;
+
+      // Inject very small, subtle splats
+      injectSplat(
+        fluidSim,
+        normX,
+        normY,
+        dx,
+        dy,
+        flowColor,
+        FLUID_CONFIG.SPLAT_RADIUS * 0.2,  // Very small radius
+        0.3  // Low force multiplier
+      );
+    }
   }
 }
 
@@ -1155,7 +1355,7 @@ function drawDebugHUD(tLinear) {
   text(`speed raw:${spdRaw.toFixed(3)}  lp:${spdLP2.toFixed(3)}  t:${tLinear.toFixed(2)}`, 20, 46);
   text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
   text(`[D] HUD  [S] skeleton  [F] fluid:${showFluid}  [O] occlusion:${OCCLUSION_ENABLED}`, 20, 78);
-  text(`[B] boundary forces:${BOUNDARY_FORCES_ENABLED}  strength:${BOUNDARY_FORCE_STRENGTH}`, 20, 94);
+  text(`[B] boundary:${BOUNDARY_FORCES_ENABLED}  [H] hands:${HAND_TRACKING_ENABLED}  [W] flow:${FLOW_FIELD_ENABLED}`, 20, 94);
   text(`gain:${SPEED_GAIN}  deadzone:${MOTION_DEADZONE}`, 20, 110);
   text(`Video: ${videoReady ? 'Ready' : 'Loading...'}  Poses: ${poses.length}`, 20, 126);
   text(`Segmentation: ${segmentationMask ? 'Active' : 'None'}  Fluid: ${fluidSim ? 'Active' : 'None'}`, 20, 142);
