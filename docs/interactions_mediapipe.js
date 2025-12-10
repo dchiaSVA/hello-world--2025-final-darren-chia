@@ -12,11 +12,15 @@
  * - Real-time skeleton tracking with Kalman filtering
  * - Body segmentation for foreground isolation
  * - Virtual chest point and facing direction indicator
+ * - Depth-aware occlusion (fluid flows behind body)
+ * - Boundary forces (inward push from edges for containment)
  *
  * Controls:
  * - [D] Toggle debug HUD
  * - [S] Toggle skeleton visualization
  * - [F] Toggle fluid simulation
+ * - [O] Toggle occlusion effect
+ * - [B] Toggle boundary forces
  *
  * Dependencies:
  * - p5.js (canvas rendering)
@@ -78,9 +82,19 @@ let renderOffsetY = 0;
 /* ---------- Edge Glow Configuration ---------- */
 const EDGE_GLOW_ENABLED = true;   // Enable/disable edge glow effect
 const EDGE_GLOW_ONLY = false;      // If true, only show glow (no video inside)
-const EDGE_GLOW_BLUR = 60;        // Blur radius for glow (higher = softer glow)
-const EDGE_GLOW_COLOR = '#ff0000'; // Bright red glow color (change to any hex color)
-const EDGE_GLOW_INTENSITY = 1.0;  // Glow opacity (0-1)
+const EDGE_GLOW_BLUR = 215;        // Blur radius for glow (higher = softer glow)
+const EDGE_GLOW_COLOR = '#51d39fff'; // Bright red glow color (change to any hex color)
+const EDGE_GLOW_INTENSITY = 0.6;  // Glow opacity (0-1)
+
+/* ---------- Occlusion Configuration ---------- */
+let OCCLUSION_ENABLED = true;     // Enable depth-based occlusion (fluid behind body)
+let fluidBackBuffer = null;        // Off-screen buffer for compositing fluid behind body
+
+/* ---------- Boundary Force Configuration ---------- */
+let BOUNDARY_FORCES_ENABLED = true;  // Enable inward boundary forces
+const BOUNDARY_FORCE_STRENGTH = 80;  // Strength of boundary push (0-200)
+const BOUNDARY_FORCE_WIDTH = 0.15;   // Width of boundary zone (0-0.5, as fraction of canvas)
+const BOUNDARY_FORCE_SAMPLES = 12;   // Number of force injection points per edge
 
 /* ---------- Color Palette (Yellow → Red) ---------- */
 const RED_HUE   = 5;    // Fast movement hue (deep red)
@@ -119,7 +133,7 @@ let frameCounter = 0; // Total frames rendered
 let fps = 0, fpsUpdateTime = 0, fpsFrameCount = 0; // FPS tracking
 
 /* ---------- Kalman Filter Configuration ---------- */
-const PROCESS_NOISE = 0.8;    // Higher = less trust in predictions
+const PROCESS_NOISE = 0.9;    // Higher = less trust in predictions
 const MEASUREMENT_NOISE = 1.5; // Lower = more trust in MediaPipe measurements
 let kalmanFilters = [];
 
@@ -193,7 +207,7 @@ const FLUID_UPDATE_SKIP = 0; // 0 = every frame, 1 = every other frame, etc.
  * Fluid simulation configuration - optimized for performance
  */
 const FLUID_CONFIG = {
-  SIM_RESOLUTION: 92,          // Velocity field resolution (lower = faster)
+  SIM_RESOLUTION: 192,          // Velocity field resolution (lower = faster)
   DYE_RESOLUTION: 356,          // Color field resolution (balanced quality/speed)
   DENSITY_DISSIPATION: 0.99,   // How fast colors fade (0.9-0.99, higher = longer trails)
   VELOCITY_DISSIPATION: 0.96,  // How fast motion dies down (0.9-0.99)
@@ -239,6 +253,9 @@ function setup() {
   glowCanvas = document.createElement('canvas');
   glowCanvas.width = RENDER_WIDTH;
   glowCanvas.height = RENDER_HEIGHT;
+
+  // Create off-screen buffer for fluid behind body (occlusion)
+  fluidBackBuffer = createGraphics(RENDER_WIDTH, RENDER_HEIGHT);
 
   // Create WebGL graphics buffer for shader-based masking
   shaderGraphics = createGraphics(RENDER_WIDTH, RENDER_HEIGHT, WEBGL);
@@ -385,6 +402,8 @@ function keyPressed() {
   if (key === 'd' || key === 'D') showDebug = !showDebug;
   if (key === 's' || key === 'S') showSkeleton = !showSkeleton;
   if (key === 'f' || key === 'F') showFluid = !showFluid;
+  if (key === 'o' || key === 'O') OCCLUSION_ENABLED = !OCCLUSION_ENABLED;
+  if (key === 'b' || key === 'B') BOUNDARY_FORCES_ENABLED = !BOUNDARY_FORCES_ENABLED;
 }
 
 /**
@@ -465,12 +484,17 @@ function draw() {
     // Update fluid simulation physics
     fluidSim.update();
 
-    // Draw fluid to p5 canvas (centered)
-    drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+    // --- OCCLUSION SYSTEM: Composite fluid behind body ---
+    if (OCCLUSION_ENABLED && segmentationMask && videoReady && SHOW_MASKED_VIDEO) {
+      drawFluidWithOcclusion();
+    } else {
+      // Standard rendering: fluid on top of everything
+      drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+    }
   }
 
-  // --- Render segmented person on top ---
-  if (SHOW_MASKED_VIDEO && segmentationMask && videoReady) {
+  // --- Render segmented person (if not using occlusion, or as overlay) ---
+  if (SHOW_MASKED_VIDEO && segmentationMask && videoReady && !OCCLUSION_ENABLED) {
     drawSegmentedVideo();
   }
 
@@ -569,6 +593,45 @@ function drawSegmentedVideo() {
     image(maskGraphics, renderOffsetX, renderOffsetY);
   } catch (err) {
     console.error('Error in drawSegmentedVideo:', err);
+  }
+}
+
+/**
+ * Draw fluid with depth-based occlusion - fluid appears BEHIND the body
+ * Compositing order: Black BG → Fluid (masked out where body is) → Body Video → Edge Glow
+ */
+function drawFluidWithOcclusion() {
+  if (!videoElement || !segmentationMask || videoElement.videoWidth === 0) return;
+
+  try {
+    // Clear the fluid back buffer
+    fluidBackBuffer.clear();
+    const fluidCtx = fluidBackBuffer.drawingContext;
+
+    // --- STEP 1: Draw fluid to back buffer ---
+    fluidCtx.globalCompositeOperation = 'source-over';
+    fluidCtx.drawImage(fluidCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+
+    // --- STEP 2: Cut out the body silhouette from fluid (destination-out) ---
+    fluidCtx.globalCompositeOperation = 'destination-out';
+
+    // Draw inverted mask (mirrored to match video)
+    fluidCtx.save();
+    fluidCtx.scale(-1, 1);
+    fluidCtx.translate(-RENDER_WIDTH, 0);
+    fluidCtx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    fluidCtx.restore();
+
+    fluidCtx.globalCompositeOperation = 'source-over';
+
+    // --- STEP 3: Draw occluded fluid to main canvas ---
+    image(fluidBackBuffer, renderOffsetX, renderOffsetY);
+
+    // --- STEP 4: Draw segmented person on top ---
+    drawSegmentedVideo();
+
+  } catch (err) {
+    console.error('Error in drawFluidWithOcclusion:', err);
   }
 }
 
@@ -699,6 +762,7 @@ function smoothKeypoints(poses) {
 
 /**
  * Draws skeleton lines, keypoints, virtual chest, and facing arrow
+ * Uses depth (z-coordinate) for perspective: closer = bigger/brighter, farther = smaller/dimmer
  * @param {Array} poses - Smoothed pose data
  * @param {number} renderW - Render area width (defaults to RENDER_WIDTH)
  * @param {number} renderH - Render area height (defaults to RENDER_HEIGHT)
@@ -707,9 +771,6 @@ function drawSkeletonAndChest(poses, renderW = RENDER_WIDTH, renderH = RENDER_HE
   // MediaPipe coordinates are already normalized 0-1, then scaled to video dimensions
   const sX = renderW / videoElement.videoWidth;
   const sY = renderH / videoElement.videoHeight;
-
-  stroke(255, 0, 0);
-  strokeWeight(2);
 
   for (const pose of poses) {
     // Draw skeleton connections using MediaPipe connection indices
@@ -720,17 +781,46 @@ function drawSkeletonAndChest(poses, renderW = RENDER_WIDTH, renderH = RENDER_HE
         // Mirror x-coordinate for display
         const ax = (videoElement.videoWidth - a.x) * sX;
         const bx = (videoElement.videoWidth - b.x) * sX;
+
+        // Average depth of the two points
+        const boneZ = ((a.z || 0) + (b.z || 0)) / 2;
+
+        // Use actual observed z range (minZ to maxZ) for more accurate mapping
+        // More dramatic scaling: 0.3x to 4x
+        // SWAPPED: since minZ > maxZ, we swap output values (far=small, close=big)
+        const depthScale = map(boneZ, minZ, maxZ, 4.0, 0.3);
+        const clampedScale = constrain(depthScale, 0.3, 4.0);
+        const brightness = map(boneZ, minZ, maxZ, 100, 30); // Brighter when close
+
+        // Color: cyan (close) to blue (far) - swapped
+        const boneHue = map(boneZ, minZ, maxZ, 180, 240);
+        stroke(boneHue, 80, constrain(brightness, 30, 100));
+        strokeWeight(2 * clampedScale);
+
         line(ax, a.y * sY, bx, b.y * sY);
       }
     }
 
-    // Draw keypoints as circles
+    // Draw keypoints as circles with depth-based sizing
     noStroke();
-    fill(0, 255, 0);
     for (const kp of pose.keypoints) {
       if (confOK(kp)) {
         const kx = (videoElement.videoWidth - kp.x) * sX;
-        circle(kx, kp.y * sY, 6);
+        const z = kp.z || 0;
+
+        // Use actual observed z range for more accurate mapping
+        // More dramatic scaling: 0.3x to 4x
+        // SWAPPED: since minZ > maxZ, we swap output values (far=small, close=big)
+        const depthScale = map(z, minZ, maxZ, 4.0, 0.3);
+        const clampedScale = constrain(depthScale, 0.3, 4.0);
+        const brightness = map(z, minZ, maxZ, 100, 30); // Brighter when close
+
+        // Color shifts from green (close) to blue (far) - swapped
+        const hue = map(z, minZ, maxZ, 120, 240);
+        fill(hue, 80, constrain(brightness, 30, 100));
+
+        // Size based on depth - base size 8, can go from 2.4 to 32 pixels
+        circle(kx, kp.y * sY, 8 * clampedScale);
       }
     }
 
@@ -938,6 +1028,61 @@ function injectBodySplats(posesArr, dtSec) {
   }
 }
 
+/**
+ * Injects boundary forces that push fluid inward from the edges
+ * Creates a "containment field" that keeps fluid centered
+ */
+function injectBoundaryForces() {
+  if (!fluidSim || !BOUNDARY_FORCES_ENABLED) return;
+
+  const samples = BOUNDARY_FORCE_SAMPLES;
+  const width = BOUNDARY_FORCE_WIDTH;
+  const strength = BOUNDARY_FORCE_STRENGTH;
+
+  // Subtle blue-tinted color for boundary forces
+  const boundaryColor = { r: 0.05, g: 0.15, b: 0.25 };
+
+  // Left edge: push right
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.5) / samples; // Sample position (0-1)
+    const x = width / 2; // Position in boundary zone
+    const y = t;
+    const dx = strength; // Push right
+    const dy = 0;
+    injectSplat(fluidSim, x, y, dx, dy, boundaryColor, FLUID_CONFIG.SPLAT_RADIUS * 0.3, 1.0);
+  }
+
+  // Right edge: push left
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.5) / samples;
+    const x = 1.0 - width / 2; // Position in boundary zone
+    const y = t;
+    const dx = -strength; // Push left
+    const dy = 0;
+    injectSplat(fluidSim, x, y, dx, dy, boundaryColor, FLUID_CONFIG.SPLAT_RADIUS * 0.3, 1.0);
+  }
+
+  // Top edge: push down
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.5) / samples;
+    const x = t;
+    const y = width / 2; // Position in boundary zone
+    const dx = 0;
+    const dy = strength; // Push down
+    injectSplat(fluidSim, x, y, dx, dy, boundaryColor, FLUID_CONFIG.SPLAT_RADIUS * 0.3, 1.0);
+  }
+
+  // Bottom edge: push up
+  for (let i = 0; i < samples; i++) {
+    const t = (i + 0.5) / samples;
+    const x = t;
+    const y = 1.0 - width / 2; // Position in boundary zone
+    const dx = 0;
+    const dy = -strength; // Push up
+    injectSplat(fluidSim, x, y, dx, dy, boundaryColor, FLUID_CONFIG.SPLAT_RADIUS * 0.3, 1.0);
+  }
+}
+
 /* ===============================================================================
    MOTION TRACKING
    =============================================================================== */
@@ -1003,21 +1148,23 @@ function measureBodyVelocity(posesArr, dtSec) {
 function drawDebugHUD(tLinear) {
   noStroke();
   fill(0, 0, 0, 65);
-  rect(10, 10, 600, 160, 8);
+  rect(10, 10, 650, 200, 8);
   fill(0, 0, 100);
   textSize(12);
   text(`FPS: ${fps}  [MediaPipe Version]`, 20, 30);
   text(`speed raw:${spdRaw.toFixed(3)}  lp:${spdLP2.toFixed(3)}  t:${tLinear.toFixed(2)}`, 20, 46);
   text(`hue:${hueNow.toFixed(1)}  sat:${satNow.toFixed(0)}  bri:${briNow.toFixed(0)}  idle:${isIdle}`, 20, 62);
-  text(`[D] HUD  [S] skeleton  [F] fluid:${showFluid}  gain:${SPEED_GAIN}  deadzone:${MOTION_DEADZONE}`, 20, 78);
-  text(`Video: ${videoReady ? 'Ready' : 'Loading...'}  Poses: ${poses.length}`, 20, 94);
-  text(`Segmentation: ${segmentationMask ? 'Active' : 'None'}  Fluid: ${fluidSim ? 'Active' : 'None'}`, 20, 110);
+  text(`[D] HUD  [S] skeleton  [F] fluid:${showFluid}  [O] occlusion:${OCCLUSION_ENABLED}`, 20, 78);
+  text(`[B] boundary forces:${BOUNDARY_FORCES_ENABLED}  strength:${BOUNDARY_FORCE_STRENGTH}`, 20, 94);
+  text(`gain:${SPEED_GAIN}  deadzone:${MOTION_DEADZONE}`, 20, 110);
+  text(`Video: ${videoReady ? 'Ready' : 'Loading...'}  Poses: ${poses.length}`, 20, 126);
+  text(`Segmentation: ${segmentationMask ? 'Active' : 'None'}  Fluid: ${fluidSim ? 'Active' : 'None'}`, 20, 142);
   // Calculate what the multiplier would be at current average depth
   const currentMult = constrain(map(avgZ, 0.2, 0.6, 0.5, 2.0), 0.5, 2.0);
-  text(`Z-depth: min=${minZ.toFixed(3)}  max=${maxZ.toFixed(3)}  avg=${avgZ.toFixed(3)}  mult=${currentMult.toFixed(2)}x`, 20, 126);
+  text(`Z-depth: min=${minZ.toFixed(3)}  max=${maxZ.toFixed(3)}  avg=${avgZ.toFixed(3)}  mult=${currentMult.toFixed(2)}x`, 20, 158);
   if (!videoReady) {
     fill(100, 100, 100);
-    text('Waiting for camera... Check browser console (F12) for errors', 20, 142);
+    text('Waiting for camera... Check browser console (F12) for errors', 20, 174);
   }
 }
 
