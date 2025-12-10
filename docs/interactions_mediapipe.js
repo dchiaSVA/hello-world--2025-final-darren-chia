@@ -88,6 +88,7 @@ const HAND_LANDMARK_NAMES = [
 // Hand tracking state
 let prevHandPositions = { left: {}, right: {} };
 let HAND_TRACKING_ENABLED = true;
+let cameraFrameCount = 0;  // For frame-skipping hand detection
 
 /* ---------- Visual Configuration ---------- */
 const SHOW_MASKED_VIDEO = true; // Whether to show segmented video (using MediaPipe Pose built-in segmentation)
@@ -344,9 +345,10 @@ function setup() {
               console.log('Video ready! Starting detection...');
               videoReady = true;
             }
-            // Send to both Pose and Hands models
+            // Send to Pose every frame, Hands every other frame for performance
             await mpPose.send({ image: videoElement });
-            if (HAND_TRACKING_ENABLED) {
+            cameraFrameCount++;
+            if (HAND_TRACKING_ENABLED && cameraFrameCount % 2 === 0) {
               await mpHands.send({ image: videoElement });
             }
           }
