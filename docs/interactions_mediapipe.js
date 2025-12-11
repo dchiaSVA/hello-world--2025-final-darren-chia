@@ -45,7 +45,12 @@ let mpPose, mpHands, mpSegmentation, mpCamera;
 let poses = [];
 let handResults = null;  // MediaPipe Hands results
 let segmentationMask = null;
+let smoothedMaskCanvas = null;  // For temporal smoothing
+let smoothedMaskCtx = null;
 let videoReady = false;
+
+// Mask smoothing configuration
+const MASK_EDGE_BLUR = 12;        // Pixels of blur on mask edges (higher = more blob-like)
 
 // MediaPipe landmark connections (for skeleton drawing)
 const POSE_CONNECTIONS = [
@@ -91,20 +96,24 @@ let HAND_TRACKING_ENABLED = true;
 let cameraFrameCount = 0;  // For frame-skipping hand detection
 
 /* ---------- Visual Configuration ---------- */
-const SHOW_MASKED_VIDEO = true; // Whether to show segmented video (using MediaPipe Pose built-in segmentation)
+let SHOW_MASKED_VIDEO = false; // Whether to show segmented video (toggle with [M]) - default off
 
-// Internal rendering resolution (higher for better quality)
-const RENDER_WIDTH = 1280;  // Increased from 960
-const RENDER_HEIGHT = 960;  // Increased from 720
+// Internal rendering resolution (higher quality)
+const RENDER_WIDTH = 1280;   // Higher resolution display
+const RENDER_HEIGHT = 960;   // Higher resolution display
 let renderOffsetX = 0;  // Calculated in setup
 let renderOffsetY = 0;
 
 /* ---------- Edge Glow Configuration ---------- */
 const EDGE_GLOW_ENABLED = true;   // Enable/disable edge glow effect
 const EDGE_GLOW_ONLY = false;      // If true, only show glow (no video inside)
-const EDGE_GLOW_BLUR = 215;        // Blur radius for glow (higher = softer glow)
-const EDGE_GLOW_COLOR = '#51d39fff'; // Bright red glow color (change to any hex color)
-const EDGE_GLOW_INTENSITY = 0.6;  // Glow opacity (0-1)
+const EDGE_GLOW_BLUR = 220;       // Blur radius for glow (higher = softer, more blob-like)
+let EDGE_GLOW_COLOR = '#f7edcccc'; // Purple glow (will shift with palette)
+const EDGE_GLOW_INTENSITY = 0.35; // Glow opacity (0-1) - slightly reduced for subtler effect
+
+// Person variation hue offsets (each person gets a different color shift)
+const PERSON_HUE_OFFSETS = [0, 60, 120, 180, 240, 300]; // 6 distinct hue variations
+let currentPersonHueOffset = PERSON_HUE_OFFSETS[Math.floor(Math.random() * PERSON_HUE_OFFSETS.length)];  // Random on load
 
 /* ---------- Occlusion Configuration ---------- */
 let OCCLUSION_ENABLED = true;     // Enable depth-based occlusion (fluid behind body)
@@ -146,14 +155,27 @@ const IDLE_EXIT       = 0.020; // Speed threshold to exit idle state
 /* ---------- Runtime State ---------- */
 let spdRaw = 0, spdLP1 = 0, spdLP2 = 0; // Speed values (raw, smoothed 1, smoothed 2)
 let isIdle = true; // Idle state flag
-let showDebug = true; // Show debug HUD
-let showSkeleton = true; // Show skeleton overlay
+let showDebug = false; // Show debug HUD (initially hidden)
+let showSkeleton = false; // Show skeleton overlay (initially hidden)
 let showFluid = true; // Show fluid simulation
 let hueNow = YEL_HUE, satNow = SAT_MIN, briNow = BRI_MIN; // Current HSB values
 
+/* ---------- Motion Ghosting Configuration ---------- */
+const GHOST_ENABLED = true;       // Enable motion ghosting effect
+const GHOST_OPACITY = 0.4;        // Opacity of ghost trail (0-1, higher = more visible)
+const GHOST_BLUR = 8;             // Blur amount for ghost (px)
+let ghostCanvas = null;           // Off-screen canvas for ghost effect
+
+/* ---------- Footstep Configuration ---------- */
+const FOOTSTEP_ENABLED = true;    // Enable footstep marks
+const FOOTSTEP_Y_THRESHOLD = 0.8; // Y position threshold (higher = must be near bottom)
+const FOOTSTEP_VELOCITY_THRESHOLD = 15; // Minimum downward velocity to trigger (lower = more sensitive)
+let prevAnkleY = { left: 0, right: 0, left_vel: 0, right_vel: 0, left_maxVel: 0, right_maxVel: 0 };
+let ankleMovingDown = { left: false, right: false };
+
 /* ---------- Color Cycling Configuration ---------- */
 let colorCycleOffset = 0;        // Current hue offset for cycling
-const COLOR_CYCLE_SPEED = 0.5;  // How fast colors cycle (degrees per frame)
+const COLOR_CYCLE_SPEED = 0.3;  // How fast colors cycle (degrees per frame) - slower for gradual shifts
 
 let lastPts = null; // Previous keypoint positions for velocity calculation
 let lastTime = 0; // Previous frame timestamp
@@ -282,8 +304,17 @@ function setup() {
   glowCanvas.width = RENDER_WIDTH;
   glowCanvas.height = RENDER_HEIGHT;
 
+  // Create canvas for temporal mask smoothing
+  smoothedMaskCanvas = document.createElement('canvas');
+  smoothedMaskCanvas.width = RENDER_WIDTH;
+  smoothedMaskCanvas.height = RENDER_HEIGHT;
+  smoothedMaskCtx = smoothedMaskCanvas.getContext('2d');
+
   // Create off-screen buffer for fluid behind body (occlusion)
   fluidBackBuffer = createGraphics(RENDER_WIDTH, RENDER_HEIGHT);
+
+  // Create canvas for motion ghosting effect
+  ghostCanvas = createGraphics(RENDER_WIDTH, RENDER_HEIGHT);
 
   // Create WebGL graphics buffer for shader-based masking
   shaderGraphics = createGraphics(RENDER_WIDTH, RENDER_HEIGHT, WEBGL);
@@ -356,7 +387,7 @@ function setup() {
           console.error('Error in camera frame callback:', err);
         }
       },
-      width: 1280,   // Increased resolution for sharper video
+      width: 1280,   // Higher resolution capture
       height: 960
     });
 
@@ -443,6 +474,19 @@ function onSegmentationResults(results) {
 }
 
 /**
+ * Update the smoothed segmentation mask with edge blur
+ * Call once per frame before using the mask
+ */
+function updateSmoothedMask() {
+  if (!segmentationMask || !smoothedMaskCtx) return;
+  smoothedMaskCtx.clearRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+  smoothedMaskCtx.filter = `blur(${MASK_EDGE_BLUR}px)`;
+  smoothedMaskCtx.globalAlpha = 1.0;
+  smoothedMaskCtx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+  smoothedMaskCtx.filter = 'none';
+}
+
+/**
  * Handle window resize - recalculate offsets (fluid stays same size)
  */
 function windowResized() {
@@ -464,6 +508,7 @@ function keyPressed() {
   if (key === 'b' || key === 'B') BOUNDARY_FORCES_ENABLED = !BOUNDARY_FORCES_ENABLED;
   if (key === 'w' || key === 'W') FLOW_FIELD_ENABLED = !FLOW_FIELD_ENABLED;
   if (key === 'h' || key === 'H') HAND_TRACKING_ENABLED = !HAND_TRACKING_ENABLED;
+  if (key === 'm' || key === 'M') SHOW_MASKED_VIDEO = !SHOW_MASKED_VIDEO;
 }
 
 /**
@@ -537,7 +582,15 @@ function draw() {
   // All rendering is offset to the centered render area
   background(0); // Black background fills entire screen
 
-  if (showFluid && fluidSim) {
+  // Update smoothed mask for this frame (temporal smoothing + edge blur)
+  if (segmentationMask) {
+    updateSmoothedMask();
+  }
+
+  // Only render visuals when a person is detected
+  const personDetected = poses && poses.length > 0;
+
+  if (personDetected && showFluid && fluidSim) {
     // Inject fluid splats at body keypoints
     injectBodySplats(poses, dtSec);
 
@@ -547,22 +600,61 @@ function draw() {
     // Update fluid simulation physics
     fluidSim.update();
 
-    // --- OCCLUSION SYSTEM: Composite fluid behind body ---
-    if (OCCLUSION_ENABLED && segmentationMask && videoReady && SHOW_MASKED_VIDEO) {
-      drawFluidWithOcclusion();
+    // --- OCCLUSION SYSTEM: Fluid always flows around body (never through it) ---
+    if (OCCLUSION_ENABLED && segmentationMask && smoothedMaskCanvas && videoReady) {
+      // Draw fluid with body cutout (works for both masked and glow-only modes)
+      fluidBackBuffer.clear();
+      const fluidCtx = fluidBackBuffer.drawingContext;
+
+      // Draw fluid
+      fluidCtx.globalCompositeOperation = 'source-over';
+      fluidCtx.drawImage(fluidCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+
+      // Cut out body silhouette (use smoothed mask for cleaner edges)
+      fluidCtx.globalCompositeOperation = 'destination-out';
+      fluidCtx.save();
+      fluidCtx.scale(-1, 1);
+      fluidCtx.translate(-RENDER_WIDTH, 0);
+      fluidCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      fluidCtx.restore();
+      fluidCtx.globalCompositeOperation = 'source-over';
+
+      // Draw occluded fluid to main canvas
+      image(fluidBackBuffer, renderOffsetX, renderOffsetY);
     } else {
       // Standard rendering: fluid on top of everything
       drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
     }
   }
 
-  // --- Render segmented person (if not using occlusion, or as overlay) ---
-  if (SHOW_MASKED_VIDEO && segmentationMask && videoReady && !OCCLUSION_ENABLED) {
+  // --- Render segmented person (when mask is enabled and not using inline occlusion) ---
+  if (personDetected && SHOW_MASKED_VIDEO && segmentationMask && videoReady) {
     drawSegmentedVideo();
   }
 
+
+  // --- Draw glow only when mask is disabled but we still have segmentation ---
+  if (personDetected && !SHOW_MASKED_VIDEO && segmentationMask && videoReady) {
+    // Draw previous frame ghost first (behind current)
+    if (GHOST_ENABLED && ghostCanvas) {
+      drawingContext.save();
+      drawingContext.globalAlpha = GHOST_OPACITY;
+      drawingContext.filter = `blur(${GHOST_BLUR}px)`;
+      drawingContext.drawImage(ghostCanvas.canvas, renderOffsetX, renderOffsetY);
+      drawingContext.restore();
+    }
+
+    drawGlowOnly();
+
+    // Capture current glow frame for next frame's ghost
+    if (GHOST_ENABLED && ghostCanvas) {
+      ghostCanvas.clear();
+      ghostCanvas.image(maskGraphics, 0, 0);
+    }
+  }
+
   // --- Render skeleton overlay (offset to render area) ---
-  if (showSkeleton && poses && poses.length) {
+  if (showSkeleton && personDetected) {
     push();
     translate(renderOffsetX, renderOffsetY);
     const smoothed = smoothKeypoints(poses);
@@ -581,7 +673,7 @@ function draw() {
  * Uses off-screen canvas with composite operations + edge glow effect
  */
 function drawSegmentedVideo() {
-  if (!videoElement || !segmentationMask || videoElement.videoWidth === 0) return;
+  if (!videoElement || !segmentationMask || !smoothedMaskCanvas || videoElement.videoWidth === 0) return;
 
   try {
     // Clear the mask graphics buffer
@@ -604,11 +696,11 @@ function drawSegmentedVideo() {
     // Use 'destination-in' to keep only the video where the mask is opaque
     ctx.globalCompositeOperation = 'destination-in';
 
-    // Draw the segmentation mask (also mirrored to match video)
+    // Draw the segmentation mask (also mirrored to match video) - use smoothed version
     ctx.save();
     ctx.scale(-1, 1);
     ctx.translate(-RENDER_WIDTH, 0);
-    ctx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    ctx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
     ctx.restore();
 
     // Reset composite operation
@@ -622,11 +714,11 @@ function drawSegmentedVideo() {
       glowCtx.clearRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
       glowCtx.globalCompositeOperation = 'source-over';
 
-      // Draw the mask to the glow canvas (mirrored)
+      // Draw the mask to the glow canvas (mirrored) - use smoothed version
       glowCtx.save();
       glowCtx.scale(-1, 1);
       glowCtx.translate(-RENDER_WIDTH, 0);
-      glowCtx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
       glowCtx.restore();
 
       // Fill it with the glow color
@@ -636,11 +728,11 @@ function drawSegmentedVideo() {
       glowCtx.globalCompositeOperation = 'source-over';
 
       // Now draw this colored mask multiple times with blur BEHIND the video
-      // Reduced from 20 to 8 layers for better performance
+      // Reduced to 6 layers for better performance
       ctx.globalCompositeOperation = 'destination-over';
-      for (let i = 0; i < 8; i++) {
-        const blurAmount = EDGE_GLOW_BLUR * (i + 1) / 8;
-        const layerAlpha = EDGE_GLOW_INTENSITY * 0.2;
+      for (let i = 0; i < 6; i++) {
+        const blurAmount = EDGE_GLOW_BLUR * (i + 1) / 6;
+        const layerAlpha = EDGE_GLOW_INTENSITY * 0.25;
 
         ctx.save();
         ctx.globalAlpha = layerAlpha;
@@ -660,11 +752,92 @@ function drawSegmentedVideo() {
 }
 
 /**
+ * Draw only the edge glow effect (no video/mask) plus a subtle silhouette
+ * Used when SHOW_MASKED_VIDEO is disabled but we still want to see the person shape
+ */
+function drawGlowOnly() {
+  if (!segmentationMask || !glowCanvas || !smoothedMaskCanvas) return;
+
+  try {
+    // Clear the mask graphics buffer
+    maskGraphics.clear();
+    const ctx = maskGraphics.drawingContext;
+
+    const glowCtx = glowCanvas.getContext('2d');
+
+    // --- Draw subtle blob-like silhouette fill first ---
+    // Clear and prepare glow canvas for silhouette
+    glowCtx.clearRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    glowCtx.globalCompositeOperation = 'source-over';
+
+    // Draw the mask to the glow canvas (mirrored) with heavy blur for blob effect
+    glowCtx.save();
+    glowCtx.filter = 'blur(25px)';  // Heavy blur to make it blob-like
+    glowCtx.scale(-1, 1);
+    glowCtx.translate(-RENDER_WIDTH, 0);
+    glowCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    glowCtx.restore();
+    glowCtx.filter = 'none';
+
+    // Fill silhouette with very faded dark color
+    glowCtx.globalCompositeOperation = 'source-in';
+    glowCtx.fillStyle = 'rgba(15, 25, 40, 0.08)'; // Very faded dark blue blob
+    glowCtx.fillRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    glowCtx.globalCompositeOperation = 'source-over';
+
+    // Draw silhouette to main buffer with additional blur
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.save();
+    ctx.filter = 'blur(15px)';  // Extra blur when drawing to main canvas
+    ctx.globalAlpha = 0.6;      // More transparent
+    ctx.drawImage(glowCanvas, 0, 0);
+    ctx.restore();
+
+    // --- Now draw the glow effect on top ---
+    if (EDGE_GLOW_ENABLED) {
+      // Prepare glow canvas again for the glow color
+      glowCtx.clearRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.globalCompositeOperation = 'source-over';
+
+      // Draw the mask to the glow canvas (mirrored) - use smoothed version
+      glowCtx.save();
+      glowCtx.scale(-1, 1);
+      glowCtx.translate(-RENDER_WIDTH, 0);
+      glowCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.restore();
+
+      // Fill it with the glow color
+      glowCtx.globalCompositeOperation = 'source-in';
+      glowCtx.fillStyle = EDGE_GLOW_COLOR;
+      glowCtx.fillRect(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+      glowCtx.globalCompositeOperation = 'source-over';
+
+      // Draw glow layers (reduced to 6 for performance)
+      for (let i = 0; i < 6; i++) {
+        const blurAmount = EDGE_GLOW_BLUR * (i + 1) / 6;
+        const layerAlpha = EDGE_GLOW_INTENSITY * 0.25;
+
+        ctx.save();
+        ctx.globalAlpha = layerAlpha;
+        ctx.filter = `blur(${blurAmount}px)`;
+        ctx.drawImage(glowCanvas, 0, 0);
+        ctx.restore();
+      }
+    }
+
+    // Draw the result to the main canvas
+    image(maskGraphics, renderOffsetX, renderOffsetY);
+  } catch (err) {
+    console.error('Error in drawGlowOnly:', err);
+  }
+}
+
+/**
  * Draw fluid with depth-based occlusion - fluid appears BEHIND the body
  * Compositing order: Black BG → Fluid (masked out where body is) → Body Video → Edge Glow
  */
 function drawFluidWithOcclusion() {
-  if (!videoElement || !segmentationMask || videoElement.videoWidth === 0) return;
+  if (!videoElement || !segmentationMask || !smoothedMaskCanvas || videoElement.videoWidth === 0) return;
 
   try {
     // Clear the fluid back buffer
@@ -678,11 +851,11 @@ function drawFluidWithOcclusion() {
     // --- STEP 2: Cut out the body silhouette from fluid (destination-out) ---
     fluidCtx.globalCompositeOperation = 'destination-out';
 
-    // Draw inverted mask (mirrored to match video)
+    // Draw inverted mask (mirrored to match video) - use smoothed version
     fluidCtx.save();
     fluidCtx.scale(-1, 1);
     fluidCtx.translate(-RENDER_WIDTH, 0);
-    fluidCtx.drawImage(segmentationMask, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+    fluidCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
     fluidCtx.restore();
 
     fluidCtx.globalCompositeOperation = 'source-over';
@@ -955,32 +1128,61 @@ function injectBodySplats(posesArr, dtSec) {
   const sX = RENDER_WIDTH / videoElement.videoWidth;
   const sY = RENDER_HEIGHT / videoElement.videoHeight;
 
-  // Update color cycling offset
+  // Update color cycling offset (slower cycle for gradual shifts)
   colorCycleOffset = (colorCycleOffset + COLOR_CYCLE_SPEED) % 360;
 
-  // Color palette (hex to RGB normalized 0-1):
-  const PALETTE = {
-    deepBlue: { r: 0.043, g: 0.122, b: 0.231 },
-    fluidBlue: { r: 0.059, g: 0.298, b: 0.506 },
-    cyanTeal: { r: 0.122, g: 0.643, b: 0.714 },
-    brightWhite: { r: 0.898, g: 0.984, b: 1.0 }
+  // Color shifting helper - converts HSL to RGB (normalized 0-1)
+  const hslToRgb = (h, s, l) => {
+    h = h / 360;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+      const k = (n + h * 12) % 12;
+      return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    };
+    return { r: f(0), g: f(8), b: f(4) };
   };
 
+  // Base hues for the palette (deep blue -> purple -> red-orange)
+  // Uses person-specific hue offset for variation (set randomly on page load)
+  const personShift = currentPersonHueOffset;
+  const baseHues = {
+    deepBlue: (230 + personShift) % 360,
+    purple: (270 + personShift) % 360,
+    magenta: (310 + personShift) % 360,
+    redOrange: (15 + personShift) % 360
+  };
+
+  // Apply color shift to create dynamic palette
+  const shift = colorCycleOffset * 0.3; // Subtle shift amount
+  const PALETTE = {
+    deepBlue: hslToRgb((baseHues.deepBlue + shift) % 360, 1.0, 0.55),     // Vivid deep blue
+    purple: hslToRgb((baseHues.purple + shift) % 360, 0.95, 0.6),         // Bright purple
+    magenta: hslToRgb((baseHues.magenta + shift) % 360, 1.0, 0.7),        // Vibrant magenta
+    redOrange: hslToRgb((baseHues.redOrange + shift) % 360, 1.0, 0.65)    // Bright red-orange
+  };
+
+  // Update glow color to match palette with person variation
+  const glowHue = (290 + personShift + shift) % 360;
+  const glowRgb = hslToRgb(glowHue, 0.85, 0.65);
+  EDGE_GLOW_COLOR = `rgba(${Math.round(glowRgb.r * 255)}, ${Math.round(glowRgb.g * 255)}, ${Math.round(glowRgb.b * 255)}, 0.85)`;
+
   // Define which keypoints create splats with palette colors
+  // Gradient: extremities = bright (red-orange), core = dark (deep blue)
   const splatPoints = [
-    { name: 'left_wrist', radius: 1.0, force: 1.0, color: 'brightWhite' },
-    { name: 'right_wrist', radius: 1.0, force: 1.0, color: 'brightWhite' },
-    { name: 'left_elbow', radius: 0.7, force: 0.6, color: 'cyanTeal' },
-    { name: 'right_elbow', radius: 0.7, force: 0.6, color: 'cyanTeal' },
-    { name: 'nose', radius: 0.5, force: 0.4, color: 'cyanTeal' },
-    { name: 'left_shoulder', radius: 0.5, force: 0.3, color: 'fluidBlue' },
-    { name: 'right_shoulder', radius: 0.5, force: 0.3, color: 'fluidBlue' },
-    { name: 'left_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },
-    { name: 'right_knee', radius: 0.6, force: 0.5, color: 'fluidBlue' },
+    { name: 'left_wrist', radius: 1.0, force: 1.0, color: 'redOrange' },
+    { name: 'right_wrist', radius: 1.0, force: 1.0, color: 'redOrange' },
+    { name: 'left_elbow', radius: 0.7, force: 0.6, color: 'magenta' },
+    { name: 'right_elbow', radius: 0.7, force: 0.6, color: 'magenta' },
+    { name: 'nose', radius: 0.5, force: 0.4, color: 'magenta' },
+    { name: 'left_shoulder', radius: 0.5, force: 0.3, color: 'purple' },
+    { name: 'right_shoulder', radius: 0.5, force: 0.3, color: 'purple' },
     { name: 'left_hip', radius: 0.4, force: 0.3, color: 'deepBlue' },
     { name: 'right_hip', radius: 0.4, force: 0.3, color: 'deepBlue' },
-    { name: 'left_ankle', radius: 0.5, force: 0.4, color: 'deepBlue' },
-    { name: 'right_ankle', radius: 0.5, force: 0.4, color: 'deepBlue' }
+    // Leg forces - gradient from purple (knees) to red-orange (ankles)
+    { name: 'left_knee', radius: 0.7, force: 0.5, color: 'purple' },
+    { name: 'right_knee', radius: 0.7, force: 0.5, color: 'purple' },
+    { name: 'left_ankle', radius: 0.6, force: 0.4, color: 'magenta' },
+    { name: 'right_ankle', radius: 0.6, force: 0.4, color: 'magenta' }
   ];
 
   // Add intermediate points along body connections for fuller coverage
@@ -988,11 +1190,8 @@ function injectBodySplats(posesArr, dtSec) {
     ['left_shoulder', 'right_shoulder'],   // Across shoulders
     ['left_shoulder', 'left_hip'],         // Left torso
     ['right_shoulder', 'right_hip'],       // Right torso
-    ['left_hip', 'right_hip'],             // Across hips
-    ['left_hip', 'left_knee'],             // Left thigh
-    ['right_hip', 'right_knee'],           // Right thigh
-    ['left_knee', 'left_ankle'],           // Left shin
-    ['right_knee', 'right_ankle']          // Right shin
+    ['left_hip', 'right_hip']              // Across hips
+    // Removed leg connections - they were causing upward shooting fluid
   ];
 
   // Helper function to create a splat at a given point
@@ -1049,6 +1248,12 @@ function injectBodySplats(posesArr, dtSec) {
 
       // Use normalized velocities for fluid direction
       injectSplat(fluidSim, normX, normY, normalizedDx, normalizedDy, rgb, radiusMult, forceMult * 0.5);
+
+      // Subtle burst splat at joint when moving fast (zero velocity = stays in place)
+      if (speed2D > 80) {
+        const burstColor = { r: rgb.r * 1.3, g: rgb.g * 1.3, b: rgb.b * 1.3 }; // Brighter
+        injectSplat(fluidSim, normX, normY, 0, 0, burstColor, 0.04, 0.05);
+      }
     }
 
     return { x, y, z };
@@ -1082,12 +1287,47 @@ function injectBodySplats(posesArr, dtSec) {
         name: `${startName}_${endName}_${i}`,
         radius: 0.8,
         force: 0.5,
-        color: 'fluidBlue'
+        color: 'deepBlue'  // Changed from 'fluidBlue' to match new palette
       };
 
       const newPos = createSplatAtPoint(interpKp, interpPt, prevKeypoints[interpPt.name]);
       if (newPos) prevKeypoints[interpPt.name] = newPos;
     }
+  }
+
+  // --- Footstep detection: inject zero-velocity fluid splat when foot lands ---
+  if (FOOTSTEP_ENABLED) {
+    const checkFootstep = (side, ankleKp) => {
+      if (!ankleKp) return;
+      const normY = ankleKp.y / videoElement.videoHeight;
+      const currentY = ankleKp.y * sY;
+      const velocityY = (currentY - prevAnkleY[side]) / Math.max(0.016, dtSec);
+
+      // Track max velocity during descent (for jump detection)
+      if (velocityY > prevAnkleY[side + '_maxVel']) {
+        prevAnkleY[side + '_maxVel'] = velocityY;
+      }
+
+      // Detect landing: was moving down, now stopped/slowed, and near bottom
+      if (ankleMovingDown[side] && velocityY < FOOTSTEP_VELOCITY_THRESHOLD && normY > FOOTSTEP_Y_THRESHOLD) {
+        const normX = (videoElement.videoWidth - ankleKp.x) / videoElement.videoWidth;
+        const white = { r: 1.0, g: 1.0, b: 1.0 };
+        // Use max velocity during fall for impact (captures jump height better)
+        const maxVel = prevAnkleY[side + '_maxVel'];
+        const impactScale = constrain(map(maxVel, 30, 300, 1.0, 5.0), 1.0, 5.0);
+        injectSplat(fluidSim, normX, normY, 0, 0, white, 0.06 * impactScale, 0.08 * impactScale);
+        prevAnkleY[side + '_maxVel'] = 0; // Reset max velocity after landing
+      }
+
+      ankleMovingDown[side] = velocityY > FOOTSTEP_VELOCITY_THRESHOLD;
+      if (!ankleMovingDown[side]) {
+        prevAnkleY[side + '_maxVel'] = 0; // Reset when not moving down
+      }
+      prevAnkleY[side] = currentY;
+    };
+
+    checkFootstep('left', getKP(pose, 'left_ankle'));
+    checkFootstep('right', getKP(pose, 'right_ankle'));
   }
 }
 
@@ -1099,13 +1339,24 @@ function injectBodySplats(posesArr, dtSec) {
 function injectHandSplats(dtSec) {
   if (!handResults || !handResults.multiHandLandmarks || !fluidSim || !videoReady || !HAND_TRACKING_ENABLED) return;
 
-  // Bright colors for fingertips - more visible than body splats
+  // Finger colors matching the new palette (deep blue -> purple -> red-orange)
+  // Color shifting applied based on colorCycleOffset
+  const shift = colorCycleOffset * 0.3;
+  const hslToRgb = (h, s, l) => {
+    h = h / 360;
+    const a = s * Math.min(l, 1 - l);
+    const f = n => {
+      const k = (n + h * 12) % 12;
+      return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    };
+    return { r: f(0), g: f(8), b: f(4) };
+  };
   const FINGER_COLORS = {
-    thumb: { r: 1.0, g: 0.9, b: 0.3 },    // Yellow
-    index: { r: 1.0, g: 0.4, b: 0.2 },    // Orange-red
-    middle: { r: 0.9, g: 0.2, b: 0.5 },   // Pink
-    ring: { r: 0.5, g: 0.3, b: 1.0 },     // Purple
-    pinky: { r: 0.2, g: 0.8, b: 1.0 }     // Cyan
+    thumb: hslToRgb((15 + shift) % 360, 1.0, 0.7),       // Red-orange (brightest)
+    index: hslToRgb((340 + shift) % 360, 0.95, 0.65),    // Coral/salmon
+    middle: hslToRgb((310 + shift) % 360, 0.9, 0.6),     // Magenta/pink
+    ring: hslToRgb((270 + shift) % 360, 0.9, 0.55),      // Purple
+    pinky: hslToRgb((240 + shift) % 360, 0.85, 0.5)      // Deep blue-purple
   };
 
   // Define which landmarks to track with their properties
