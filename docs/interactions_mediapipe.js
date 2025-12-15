@@ -316,12 +316,9 @@ function setup() {
   // Create canvas for motion ghosting effect
   ghostCanvas = createGraphics(RENDER_WIDTH, RENDER_HEIGHT);
 
-  // Create WebGL graphics buffer for shader-based masking
-  shaderGraphics = createGraphics(RENDER_WIDTH, RENDER_HEIGHT, WEBGL);
-
-  // Create shader from source code
-  maskShader = shaderGraphics.createShader(vertexShaderCode, fragmentShaderCode);
-  console.log('WebGL masking shader initialized');
+  // Note: Removed WebGL shader-based masking to reduce WebGL context usage
+  // The shader was defined but never actually used in the rendering pipeline
+  // All masking is done via Canvas 2D composite operations instead
 
   // Get video element from HTML
   videoElement = document.getElementById('mediapipe-video');
@@ -412,9 +409,59 @@ function setup() {
     console.log('Fluid simulation initialized');
   } else {
     console.error('Failed to initialize fluid simulation');
+    showFluid = false; // Disable fluid simulation
+    displayWebGLError(); // Show user-friendly error message
   }
 
   console.log('Setup complete');
+}
+
+/**
+ * Display user-friendly error message when WebGL initialization fails
+ */
+function displayWebGLError() {
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 50, 50, 0.95);
+    color: white;
+    padding: 20px 30px;
+    border-radius: 10px;
+    font-family: Arial, sans-serif;
+    font-size: 16px;
+    max-width: 600px;
+    z-index: 10000;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  `;
+  errorDiv.innerHTML = `
+    <h3 style="margin: 0 0 10px 0;">⚠️ Fluid Simulation Disabled</h3>
+    <p style="margin: 0;">
+      WebGL initialization failed. This may be because:
+    </p>
+    <ul style="margin: 10px 0; padding-left: 20px;">
+      <li>Your browser has too many WebGL contexts open (try closing other tabs)</li>
+      <li>GPU resources are exhausted (try restarting your browser)</li>
+      <li>Chrome ANGLE backend is set to D3D9 instead of Default (check chrome://flags/#use-angle)</li>
+      <li>Your GPU drivers need updating</li>
+    </ul>
+    <p style="margin: 10px 0 0 0; font-size: 14px;">
+      <strong>The visualization will continue without fluid effects.</strong>
+      <a href="#" onclick="this.parentElement.parentElement.remove(); return false;" style="color: white; text-decoration: underline; margin-left: 10px;">Dismiss</a>
+    </p>
+  `;
+  document.body.appendChild(errorDiv);
+
+  // Auto-dismiss after 15 seconds
+  setTimeout(() => {
+    if (errorDiv.parentElement) {
+      errorDiv.style.transition = 'opacity 1s';
+      errorDiv.style.opacity = '0';
+      setTimeout(() => errorDiv.remove(), 1000);
+    }
+  }, 15000);
 }
 
 /**
@@ -591,39 +638,48 @@ function draw() {
   const personDetected = poses && poses.length > 0;
 
   if (personDetected && showFluid && fluidSim) {
-    // Inject fluid splats at body keypoints
-    injectBodySplats(poses, dtSec);
+    // Wrap fluid operations in try-catch for runtime error handling
+    try {
+      // Inject fluid splats at body keypoints
+      injectBodySplats(poses, dtSec);
 
-    // Inject fluid splats at hand landmarks (detailed finger tracking)
-    injectHandSplats(dtSec);
+      // Inject fluid splats at hand landmarks (detailed finger tracking)
+      injectHandSplats(dtSec);
 
-    // Update fluid simulation physics
-    fluidSim.update();
+      // Update fluid simulation physics
+      fluidSim.update();
 
-    // --- OCCLUSION SYSTEM: Fluid always flows around body (never through it) ---
-    if (OCCLUSION_ENABLED && segmentationMask && smoothedMaskCanvas && videoReady) {
-      // Draw fluid with body cutout (works for both masked and glow-only modes)
-      fluidBackBuffer.clear();
-      const fluidCtx = fluidBackBuffer.drawingContext;
+      // --- OCCLUSION SYSTEM: Fluid always flows around body (never through it) ---
+      if (OCCLUSION_ENABLED && segmentationMask && smoothedMaskCanvas && videoReady) {
+        // Draw fluid with body cutout (works for both masked and glow-only modes)
+        fluidBackBuffer.clear();
+        const fluidCtx = fluidBackBuffer.drawingContext;
 
-      // Draw fluid
-      fluidCtx.globalCompositeOperation = 'source-over';
-      fluidCtx.drawImage(fluidCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        // Draw fluid
+        fluidCtx.globalCompositeOperation = 'source-over';
+        fluidCtx.drawImage(fluidCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
 
-      // Cut out body silhouette (use smoothed mask for cleaner edges)
-      fluidCtx.globalCompositeOperation = 'destination-out';
-      fluidCtx.save();
-      fluidCtx.scale(-1, 1);
-      fluidCtx.translate(-RENDER_WIDTH, 0);
-      fluidCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-      fluidCtx.restore();
-      fluidCtx.globalCompositeOperation = 'source-over';
+        // Cut out body silhouette (use smoothed mask for cleaner edges)
+        fluidCtx.globalCompositeOperation = 'destination-out';
+        fluidCtx.save();
+        fluidCtx.scale(-1, 1);
+        fluidCtx.translate(-RENDER_WIDTH, 0);
+        fluidCtx.drawImage(smoothedMaskCanvas, 0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        fluidCtx.restore();
+        fluidCtx.globalCompositeOperation = 'source-over';
 
-      // Draw occluded fluid to main canvas
-      image(fluidBackBuffer, renderOffsetX, renderOffsetY);
-    } else {
-      // Standard rendering: fluid on top of everything
-      drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+        // Draw occluded fluid to main canvas
+        image(fluidBackBuffer, renderOffsetX, renderOffsetY);
+      } else {
+        // Standard rendering: fluid on top of everything
+        drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+      }
+    } catch (err) {
+      console.error('[Fluid] Runtime error:', err.message);
+      // Disable fluid to prevent error spam
+      showFluid = false;
+      fluidSim = null;
+      displayWebGLError(); // Show error once
     }
   }
 

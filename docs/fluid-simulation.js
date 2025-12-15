@@ -69,21 +69,78 @@ function initFluidSimulation(width, height, config) {
 
   document.body.appendChild(fluidCanvas);
 
-  let gl = fluidCanvas.getContext('webgl2', { alpha: true, premultipliedAlpha: false });
+  // Try WebGL2 first (with performance caveat disabled for compatibility)
+  let gl = fluidCanvas.getContext('webgl2', {
+    alpha: true,
+    premultipliedAlpha: false,
+    failIfMajorPerformanceCaveat: false
+  });
+
+  let glVersion = 'WebGL2';
+
+  // Fallback to WebGL1
   if (!gl) {
-    gl = fluidCanvas.getContext('webgl', { alpha: true });
+    console.log('[Fluid] WebGL2 not available, trying WebGL1...');
+    gl = fluidCanvas.getContext('webgl', {
+      alpha: true,
+      failIfMajorPerformanceCaveat: false
+    });
+    glVersion = 'WebGL1';
   }
 
+  // Check if context creation failed
   if (!gl) {
-    console.warn('WebGL not supported, fluid simulation disabled');
+    console.error('[Fluid] WebGL context creation failed');
+    console.error('[Fluid] Your browser may have hit the WebGL context limit');
+    console.error('[Fluid] Try closing other tabs or restarting your browser');
+    console.error('[Fluid] Note: Check chrome://flags/#use-angle is set to "Default" (not D3D9)');
+    document.body.removeChild(fluidCanvas);
     return null;
   }
 
-  // Enable extensions for floating point textures
-  gl.getExtension('EXT_color_buffer_float');
-  gl.getExtension('OES_texture_float_linear');
+  // Validate that the context is actually usable
+  try {
+    const testTexture = gl.createTexture();
+    if (!testTexture) {
+      throw new Error('Failed to create test texture');
+    }
+    gl.deleteTexture(testTexture);
+    console.log(`[Fluid] ${glVersion} context created successfully`);
+  } catch (err) {
+    console.error('[Fluid] WebGL context is invalid:', err.message);
+    console.error('[Fluid] This may indicate a GPU driver issue or resource exhaustion');
+    document.body.removeChild(fluidCanvas);
+    return null;
+  }
 
-  const fluidSim = new FluidSimulation(gl, fluidCanvas.width, fluidCanvas.height, config);
+  // Set up context loss handlers
+  fluidCanvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    console.error('[Fluid] WebGL context lost! Fluid simulation disabled.');
+  }, false);
+
+  fluidCanvas.addEventListener('webglcontextrestored', () => {
+    console.log('[Fluid] WebGL context restored');
+  }, false);
+
+  // Enable extensions for floating point textures
+  const ext1 = gl.getExtension('EXT_color_buffer_float');
+  const ext2 = gl.getExtension('OES_texture_float_linear');
+
+  // Log extension support (useful for debugging)
+  if (!ext1) console.warn('[Fluid] Float color buffers not supported');
+  if (!ext2) console.warn('[Fluid] Linear float filtering not supported');
+
+  // Wrap FluidSimulation creation in try-catch
+  let fluidSim;
+  try {
+    fluidSim = new FluidSimulation(gl, fluidCanvas.width, fluidCanvas.height, config);
+    console.log('[Fluid] Simulation initialized successfully');
+  } catch (err) {
+    console.error('[Fluid] Failed to create FluidSimulation:', err.message);
+    document.body.removeChild(fluidCanvas);
+    return null;
+  }
 
   return { canvas: fluidCanvas, gl, sim: fluidSim };
 }
@@ -161,6 +218,16 @@ function injectSplat(fluidSim, x, y, dx, dy, color, radius, force) {
  */
 class FluidSimulation {
   constructor(gl, width, height, config) {
+    // Validate WebGL context
+    if (!gl) {
+      throw new Error('FluidSimulation: WebGL context is null or undefined');
+    }
+
+    // Validate context is not lost
+    if (gl.isContextLost && gl.isContextLost()) {
+      throw new Error('FluidSimulation: WebGL context is lost');
+    }
+
     this.gl = gl;
     this.width = width;
     this.height = height;
@@ -176,14 +243,22 @@ class FluidSimulation {
     this.dyeHeight = dyeRes.height;
 
     // Compile all shader programs
-    this.programs = this.createPrograms();
+    try {
+      this.programs = this.createPrograms();
+    } catch (err) {
+      throw new Error(`FluidSimulation: Failed to create shader programs: ${err.message}`);
+    }
 
     // Create framebuffers for simulation state
-    this.density = this.createDoubleFBO(this.dyeWidth, this.dyeHeight, gl.RGBA, gl.FLOAT);
-    this.velocity = this.createDoubleFBO(this.simWidth, this.simHeight, gl.RG, gl.FLOAT);
-    this.pressure = this.createDoubleFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
-    this.divergence = this.createFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
-    this.curl = this.createFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
+    try {
+      this.density = this.createDoubleFBO(this.dyeWidth, this.dyeHeight, gl.RGBA, gl.FLOAT);
+      this.velocity = this.createDoubleFBO(this.simWidth, this.simHeight, gl.RG, gl.FLOAT);
+      this.pressure = this.createDoubleFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
+      this.divergence = this.createFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
+      this.curl = this.createFBO(this.simWidth, this.simHeight, gl.R, gl.FLOAT);
+    } catch (err) {
+      throw new Error(`FluidSimulation: Failed to create framebuffers: ${err.message}`);
+    }
 
     // Create fullscreen quad for rendering
     this.quadBuffer = this.createQuadBuffer();
@@ -492,8 +567,22 @@ class FluidSimulation {
   createFBO(w, h, internalFormat, format) {
     const gl = this.gl;
 
+    // Safety check
+    if (!gl) {
+      throw new Error('createFBO: WebGL context is null or undefined');
+    }
+
+    if (gl.isContextLost && gl.isContextLost()) {
+      throw new Error('createFBO: WebGL context is lost');
+    }
+
     gl.activeTexture(gl.TEXTURE0);
     const texture = gl.createTexture();
+
+    // Validate texture creation
+    if (!texture) {
+      throw new Error('createFBO: Failed to create texture');
+    }
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -644,6 +733,16 @@ class FluidSimulation {
   }
 
   /**
+   * Checks if the WebGL context is still valid
+   * @returns {boolean} True if context is valid, false otherwise
+   */
+  isContextValid() {
+    if (!this.gl) return false;
+    if (this.gl.isContextLost && this.gl.isContextLost()) return false;
+    return true;
+  }
+
+  /**
    * Updates the fluid simulation by one time step
    * Performs the full Navier-Stokes solve: advection, diffusion, pressure projection
    *
@@ -655,6 +754,12 @@ class FluidSimulation {
    * - Add turbulence noise for more chaotic motion
    */
   update() {
+    // Check context validity before each update
+    if (!this.isContextValid()) {
+      console.error('[Fluid] WebGL context lost during update');
+      return; // Skip update
+    }
+
     const gl = this.gl;
     const now = performance.now();
     let dt = (now - this.lastTime) / 1000;

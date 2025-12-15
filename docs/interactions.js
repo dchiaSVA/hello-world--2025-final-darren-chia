@@ -196,12 +196,66 @@ function setup() {
   lastTime = millis();
 
   // Initialize WebGL fluid simulation at smaller render size
+  console.log('Initializing fluid simulation...');
   const fluidInit = initFluidSimulation(RENDER_WIDTH, RENDER_HEIGHT, FLUID_CONFIG);
   if (fluidInit) {
     fluidCanvas = fluidInit.canvas;
     gl = fluidInit.gl;
     fluidSim = fluidInit.sim;
+    console.log('Fluid simulation initialized');
+  } else {
+    console.error('Failed to initialize fluid simulation');
+    showFluid = false; // Disable fluid simulation
+    displayWebGLError(); // Show user-friendly error message
   }
+}
+
+/**
+ * Display user-friendly error message when WebGL initialization fails
+ */
+function displayWebGLError() {
+  const errorDiv = document.createElement('div');
+  errorDiv.style.cssText = `
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 50, 50, 0.95);
+    color: white;
+    padding: 20px 30px;
+    border-radius: 10px;
+    font-family: Arial, sans-serif;
+    font-size: 16px;
+    max-width: 600px;
+    z-index: 10000;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  `;
+  errorDiv.innerHTML = `
+    <h3 style="margin: 0 0 10px 0;">⚠️ Fluid Simulation Disabled</h3>
+    <p style="margin: 0;">
+      WebGL initialization failed. This may be because:
+    </p>
+    <ul style="margin: 10px 0; padding-left: 20px;">
+      <li>Your browser has too many WebGL contexts open (try closing other tabs)</li>
+      <li>GPU resources are exhausted (try restarting your browser)</li>
+      <li>Chrome ANGLE backend is set to D3D9 instead of Default (check chrome://flags/#use-angle)</li>
+      <li>Your GPU drivers need updating</li>
+    </ul>
+    <p style="margin: 10px 0 0 0; font-size: 14px;">
+      <strong>The visualization will continue without fluid effects.</strong>
+      <a href="#" onclick="this.parentElement.parentElement.remove(); return false;" style="color: white; text-decoration: underline; margin-left: 10px;">Dismiss</a>
+    </p>
+  `;
+  document.body.appendChild(errorDiv);
+
+  // Auto-dismiss after 15 seconds
+  setTimeout(() => {
+    if (errorDiv.parentElement) {
+      errorDiv.style.transition = 'opacity 1s';
+      errorDiv.style.opacity = '0';
+      setTimeout(() => errorDiv.remove(), 1000);
+    }
+  }, 15000);
 }
 
 /**
@@ -304,14 +358,23 @@ function draw() {
   background(0); // Black background fills entire screen
 
   if (showFluid && fluidSim) {
-    // Inject fluid splats at body keypoints
-    injectBodySplats(poses, dtSec);
+    // Wrap fluid operations in try-catch for runtime error handling
+    try {
+      // Inject fluid splats at body keypoints
+      injectBodySplats(poses, dtSec);
 
-    // Update fluid simulation physics
-    fluidSim.update();
+      // Update fluid simulation physics
+      fluidSim.update();
 
-    // Draw fluid to p5 canvas (centered)
-    drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+      // Draw fluid to p5 canvas (centered)
+      drawingContext.drawImage(fluidCanvas, renderOffsetX, renderOffsetY, RENDER_WIDTH, RENDER_HEIGHT);
+    } catch (err) {
+      console.error('[Fluid] Runtime error:', err.message);
+      // Disable fluid to prevent error spam
+      showFluid = false;
+      fluidSim = null;
+      displayWebGLError(); // Show error once
+    }
   }
 
   // --- Render segmented person on top ---
