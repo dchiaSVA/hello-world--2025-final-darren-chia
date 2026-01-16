@@ -199,8 +199,8 @@ This project used AI-assisted coding tools during development:
 - Solo project
 
 ### Resources
-- Class examples repo
-- Tutorials/docs used (add links)
+- https://docs.ml5js.org/#/reference/bodypose
+
 
 ---
 
