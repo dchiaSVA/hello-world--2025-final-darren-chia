@@ -3,7 +3,7 @@
 
 ## Project Overview
 ### What it is
-A real-time, camera-based interactive projection/visual system. Movement is tracked live and used to drive a fluid simulation, turning your body into a “controller” for the visuals.
+A real-time, camera-based interactive projection/visual system. Your movement is tracked live and used to drive a fluid simulation, turning your body into a “controller” for the visuals.
 
 ### Why it exists
 Originally designed as an “instrument for dancers” (movement-driven instead of music-driven), the project evolved into something more visual and playful—meant to help people feel more comfortable moving and experimenting with their body in a low-pressure way. Dance is still the core goal.
@@ -41,7 +41,7 @@ Originally designed as an “instrument for dancers” (movement-driven instead 
 ---
 
 ## How to Run
-> Update this section if your repo setup differs.
+> This repo contains multiple HTML/JS pairs. Use the ones below depending on what you want to test.
 
 ### Run locally (recommended)
 1. Clone/download the repo
@@ -51,19 +51,31 @@ Originally designed as an “instrument for dancers” (movement-driven instead 
 3. Open the local URL in your browser (often `http://localhost:8000`)
 4. Allow camera permissions
 
-### Run via GitHub Pages (if using `/docs`)
-If the project is hosted via GitHub Pages from the `docs/` folder:
-1. Open the GitHub Pages link
-2. Allow camera permissions
+### Run the final (recommended)
+Open:
+- `interactions_mediapipe.html` (loads `interactions_mediapipe.js`)
+
+### Run experiments (optimization / responsiveness)
+Open:
+- `base_index.html` (loads `base.js`)
+
+> Note: Some sketches may require HTTPS or localhost for camera access.
 
 ---
 
 ## Project Structure
-> Adjust names if your folders differ.
+This project includes multiple “sketch” variants (each HTML file loads a different JS file).
 
-- `docs/` — deployable site build (GitHub Pages)
-- `index.html` — main entry point
-- Additional sketch files — experiments/tests (smoothing, modes, visual effects)
+### Final version
+- `interactions_mediapipe.html` — final demo page
+- `interactions_mediapipe.js` — final interaction + fluid simulation implementation (MediaPipe)
+
+### Experiment / R&D versions
+- `base_index.html` — baseline testing page (responsiveness + optimization)
+- `base.js` — baseline sketch logic
+
+### Other experiments
+- Additional `*.html` + `*.js` pairs: earlier iterations and interaction tests (ghosting, trails, segmentation toggles, smoothing experiments, etc.)
 
 ---
 
@@ -82,7 +94,7 @@ If the project is hosted via GitHub Pages from the `docs/` folder:
 
 ### Week 3 — Dec 1–6 (Refinement + smoothing + performance)
 **12/01**
-- Created `index.html`
+- Set up the web entry point(s) and began organizing experiments
 
 **12/02**
 - Added FPS counter
@@ -99,7 +111,7 @@ If the project is hosted via GitHub Pages from the `docs/` folder:
   - Skeleton smoothing + color sensitivity tuning
 
 **12/06**
-- Added different test modes:
+- Added different test modes for iteration:
   - Base mode (tracking/video optimization)
   - Light mode (trail effects)
   - Ghosting mode (ghosting + RGB delay)
@@ -151,9 +163,8 @@ If the project is hosted via GitHub Pages from the `docs/` folder:
 > Add your links/assets here.
 
 - Screenshots/GIFs:
-  - Fluid simulation reacting to movement
-  - Ghosting/RGB delay mode
-  - Skeleton/landmark visualization mode
+  - Fluid simulation reacting to movement (final)
+  - Optional: earlier experiments (ghosting/RGB delay, segmentation)
 - Video demo (recommended)
 - Live project link (if applicable): **[add link]**
 
@@ -163,8 +174,7 @@ If the project is hosted via GitHub Pages from the `docs/` folder:
 ### Libraries / APIs
 - p5.js
 - ml5.js (early prototypes/template)
-- MediaPipe (later tracking)
-- Fluid simulation reference/source (if based on external code): **[add link]**
+- MediaPipe (final tracking)
 
 ### Collaborators
 - Solo project (update if applicable)
@@ -177,14 +187,14 @@ If the project is hosted via GitHub Pages from the `docs/` folder:
 
 ## Reflection
 ### What worked well
-- Splitting tests into modes helped iteration and debugging
+- Keeping multiple HTML/JS variants made experimentation fast without breaking the “final” version
 - Performance tuning improved the real-time feel
 - Switching to MediaPipe unlocked better tracking control
 
 ### What I would improve with more time
 - Projection mapping calibration + setup flow for real installation use
 - Simple UI controls (sliders) for smoothing/thresholds/mode switching
-- More intentional mapping between movement qualities (speed, stillness, gesture type) and visual behavior
+- More intentional mapping between movement qualities (speed, stillness, gesture type) and fluid behavior
 
 ### What I’d do differently
 - Lock the MVP earlier (one primary “hero mode”), keep experiments as optional branches
