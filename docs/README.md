@@ -1,5 +1,5 @@
-# Smokes and Mirrors
-**One-sentence description:** A camera-based projection that turns your movement into a fluid-like visual—your gestures “push” a fluid simulation on screen, creating real-time trails, ripples, and color shifts.
+# Smoke and Mirrors
+ A camera-based projection that turns your movement into a fluid-like visual—your gestures “push” a fluid simulation on screen, creating real-time trails, ripples, and color shifts.
 
 ## Project Overview
 ### What it is
@@ -65,26 +65,21 @@ Open:
 > Note: Some sketches may require HTTPS or localhost for camera access.
 
 ## Media
-**Base version**  
-_Add screenshot here (baseline responsiveness/optimization setup)._  
-<!-- ![Base version](assets/base_version.png) -->
+**Base version**    
+![Base version!](assets/base_version.png)
 
 **Fluid simulation**  
-_Add screenshot here (fluid reacting to movement before hand controls were added)._  
-<!-- ![Fluid simulation](assets/fluid_simulation.png) -->
+    ![Fluid simulation!](assets/fluid.png) 
 
 **Fluid simulation with hands**  
-_Add screenshot here (hand-driven interaction pushing the fluid simulation)._  
-<!-- ![Fluid simulation with hands](assets/fluid_hands.png) -->
+![Fluid simulation with hands!](assets/hands.png) 
 
-**Skeleton off**  
-_Add screenshot here (final visuals with skeleton/landmark overlay disabled)._  
-<!-- ![Skeleton off](assets/skeleton_off.png) -->
+**Skeleton and HUD off**  
+![Skeleton + HUD off!](assets/off.png) 
 
-**HUD off**  
-_Add screenshot here (final visuals with the HUD/debug UI disabled)._  
-<!-- ![HUD off](assets/hud_off.png) -->
-
+**Live Demo**
+![Live Demo!](assets/live.png)
+https://drive.google.com/file/d/1UCb5tlaIScIAUkESwaJoMux5mKLevoJT/view?usp=sharing 
 ---
 
 ## Project Structure
