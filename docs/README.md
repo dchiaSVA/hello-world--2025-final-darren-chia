@@ -54,9 +54,9 @@ Originally designed as an “instrument for dancers” (movement-driven instead 
 3. Open the local URL in your browser (often `http://localhost:8000`)
 4. Allow camera permissions
 
-### Run the final (recommended)
+### Run the final demo (recommended)
 Open:
-- `interactions_mediapipe.html` (loads `interactions_mediapipe.js`)
+- `interactions_mediapipe_index.html` (loads the final MediaPipe-based JS)
 
 ### Run experiments (optimization / responsiveness)
 Open:
@@ -65,8 +65,9 @@ Open:
 > Note: Some sketches may require HTTPS or localhost for camera access.
 
 ## Media
-**Base version**    
-![Base version!](assets/base_version.png)
+**Base version**  
+_Add screenshot here (baseline responsiveness/optimization setup)._  
+<!-- ![Base version](assets/base_version.png) -->
 
 **Fluid simulation**  
 _Add screenshot here (fluid reacting to movement before hand controls were added)._  
@@ -89,8 +90,8 @@ _Add screenshot here (final visuals with the HUD/debug UI disabled)._
 ## Project Structure
 This project includes multiple “sketch” variants (each HTML file loads a different JS file).
 
-### Final version
-- `interactions_mediapipe.html` — final demo page
+### Final version (recommended)
+- `interactions_mediapipe_index.html` — final demo page
 - `interactions_mediapipe.js` — final interaction + fluid simulation implementation (MediaPipe)
 
 ### Experiment / R&D versions
