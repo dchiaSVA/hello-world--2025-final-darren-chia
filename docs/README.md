@@ -65,9 +65,8 @@ Open:
 > Note: Some sketches may require HTTPS or localhost for camera access.
 
 ## Media
-**Base version**  
-_Add screenshot here (baseline responsiveness/optimization setup)._  
-<!-- ![Base version](assets/base_version.png) -->
+**Base version**    
+![Base version!](assets/base_version.png)
 
 **Fluid simulation**  
 _Add screenshot here (fluid reacting to movement before hand controls were added)._  
